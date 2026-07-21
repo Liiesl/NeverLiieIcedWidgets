@@ -1,7 +1,7 @@
 use iced::widget::{button, column, container, rule, scrollable, space, text};
 use iced::{Element, Length};
 
-use never_lie_iced_widgets::overlay::{Anchor, Floating, OverlayManager, Position};
+use neverliie_iced_widgets::overlay::{Anchor, Floating, OverlayManager, Position};
 
 fn main() -> iced::Result {
     iced::run(App::update, App::view)
