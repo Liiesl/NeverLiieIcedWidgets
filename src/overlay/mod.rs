@@ -48,23 +48,67 @@
 //! - **Viewport-relative**: `Position::ViewportTopLeft`, `Position::ViewportBottom`, etc.
 //! - **Cursor**: `Position::FollowCursor`
 //! - **Absolute**: `Position::absolute(x, y)`
+//! - **Floating-relative**: `Position::Floating { index, anchor, offset }`
 //!
 //! For custom offsets, use the struct variants:
 //!
 //! ```ignore
 //! Position::Parent { anchor: Anchor::BottomLeft, offset: Vector::new(0.0, 4.0) }
 //! Position::Viewport { anchor: Anchor::BottomRight, offset: Vector::new(-10.0, -10.0) }
+//! Position::Floating { index: 0, anchor: Anchor::TopRight, offset: Vector::new(4.0, 0.0) }
+//! ```
+//!
+//! # Dismiss Triggers
+//!
+//! By default, floating content is dismissed when clicking anywhere outside
+//! it. You can customize this behavior with [`DismissTrigger`]:
+//!
+//! ```ignore
+//! OverlayManager::new(content)
+//!     .overlay(Floating::new(popup).position(Position::FollowCursor))
+//!     .on_dismiss_trigger(Message::Dismiss, DismissTrigger::LeftClickOutside)
+//!     .into()
+//! ```
+//!
+//! # Z-Index
+//!
+//! Floating elements support z-index ordering via [`Floating::index`]:
+//!
+//! ```ignore
+//! Floating::new(tooltip).position(Position::Top).index(2.0)
+//! Floating::new(menu).position(Position::FollowCursor).index(1.0)
+//! // tooltip renders on top of menu
 //! ```
 //!
 //! [`OverlayManager`]: struct.OverlayManager
 //! [`Floating`]: struct.Floating
 //! [`Position`]: enum.Position
+//! [`DismissTrigger`]: enum.DismissTrigger
 
 mod manager;
+mod util;
 
 pub use manager::OverlayManager;
+pub use util::{check_dismiss, clamp_to_viewport};
 
 use iced::{Element, Point, Rectangle, Vector};
+
+/// Determines which mouse event triggers dismissal of floating content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DismissTrigger {
+    /// Dismiss when left-clicking outside the floating content.
+    LeftClickOutside,
+    /// Dismiss when right-clicking outside the floating content.
+    RightClickOutside,
+    /// Dismiss when clicking any mouse button outside the floating content.
+    AnyClickOutside,
+}
+
+impl Default for DismissTrigger {
+    fn default() -> Self {
+        DismissTrigger::AnyClickOutside
+    }
+}
 
 /// Anchor point for positioning floating content.
 ///
@@ -211,6 +255,20 @@ pub enum Position {
         offset: Vector,
     },
 
+    /// Relative to another floating element by index.
+    ///
+    /// The `index` refers to the position of the floating element in the
+    /// order they were added to the [`OverlayManager`]. For example, index
+    /// `0` refers to the first floating element added.
+    ///
+    /// This is useful for submenus that need to appear next to their parent
+    /// menu item.
+    Floating {
+        index: usize,
+        anchor: Anchor,
+        offset: Vector,
+    },
+
     // Parent-relative convenience (zero offset)
     TopLeft,
     Top,
@@ -268,6 +326,11 @@ impl Position {
         Position::Parent { anchor: Anchor::TopRight, offset }
     }
 
+    /// Creates a position relative to another floating element.
+    pub fn floating(index: usize, anchor: Anchor, offset: Vector) -> Self {
+        Position::Floating { index, anchor, offset }
+    }
+
     /// Returns the anchor and offset for this position, if it is
     /// parent-relative.
     fn parent_anchor_offset(self) -> Option<(Anchor, Vector)> {
@@ -303,6 +366,15 @@ impl Position {
             _ => None,
         }
     }
+
+    /// Returns the index, anchor, and offset for this position, if it is
+    /// floating-relative.
+    fn floating_index_anchor_offset(self) -> Option<(usize, Anchor, Vector)> {
+        match self {
+            Position::Floating { index, anchor, offset } => Some((index, anchor, offset)),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Position {
@@ -329,6 +401,7 @@ where
 {
     pub(crate) content: Element<'a, Message, Theme, Renderer>,
     pub(crate) position: Position,
+    pub(crate) index: f32,
 }
 
 impl<'a, Message, Theme, Renderer> Floating<'a, Message, Theme, Renderer>
@@ -341,6 +414,7 @@ where
         Self {
             content: content.into(),
             position: Position::default(),
+            index: 1.0,
         }
     }
 
@@ -348,6 +422,16 @@ where
     #[must_use]
     pub fn position(mut self, position: Position) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Sets the z-index of this floating element.
+    ///
+    /// Overlays with a higher index are rendered on top of overlays with
+    /// a lower index. Defaults to `1.0`.
+    #[must_use]
+    pub fn index(mut self, index: f32) -> Self {
+        self.index = index;
         self
     }
 }

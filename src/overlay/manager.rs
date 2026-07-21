@@ -7,10 +7,11 @@ use iced::mouse;
 use iced::widget::container;
 use iced::{Element, Event, Length, Point, Rectangle, Size, Vector};
 
-use super::{Floating, Position};
+use super::{check_dismiss, clamp_to_viewport, DismissTrigger, Floating, Position};
 
 struct State {
     cursor_position: Point,
+    floating_bounds: Vec<Rectangle>,
 }
 
 /// A wrapper widget that renders floating children as overlays.
@@ -52,6 +53,7 @@ pub struct OverlayManager<
     content: Element<'a, Message, Theme, Renderer>,
     floating: Vec<Floating<'a, Message, Theme, Renderer>>,
     on_dismiss: Option<Message>,
+    dismiss_trigger: DismissTrigger,
 }
 
 impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> {
@@ -63,6 +65,7 @@ impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> 
             content: content.into(),
             floating: Vec::new(),
             on_dismiss: None,
+            dismiss_trigger: DismissTrigger::default(),
         }
     }
 
@@ -77,9 +80,40 @@ impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> 
     }
 
     /// Sets the message to emit when clicking outside all floating content.
+    ///
+    /// Uses [`DismissTrigger::AnyClickOutside`] by default — any mouse
+    /// button press outside the floating content triggers dismissal.
+    /// Use [`on_dismiss_left`] for left-click only, or
+    /// [`on_dismiss_trigger`] for full control.
+    ///
+    /// [`on_dismiss_left`]: Self::on_dismiss_left
+    /// [`on_dismiss_trigger`]: Self::on_dismiss_trigger
     #[must_use]
     pub fn on_dismiss(mut self, message: Message) -> Self {
         self.on_dismiss = Some(message);
+        self.dismiss_trigger = DismissTrigger::AnyClickOutside;
+        self
+    }
+
+    /// Sets the message to emit when left-clicking outside all floating
+    /// content.
+    #[must_use]
+    pub fn on_dismiss_left(mut self, message: Message) -> Self {
+        self.on_dismiss = Some(message);
+        self.dismiss_trigger = DismissTrigger::LeftClickOutside;
+        self
+    }
+
+    /// Sets the message to emit when the specified dismiss trigger fires
+    /// outside all floating content.
+    #[must_use]
+    pub fn on_dismiss_trigger(
+        mut self,
+        message: Message,
+        trigger: DismissTrigger,
+    ) -> Self {
+        self.on_dismiss = Some(message);
+        self.dismiss_trigger = trigger;
         self
     }
 }
@@ -120,6 +154,7 @@ where
     fn state(&self) -> widget::tree::State {
         widget::tree::State::new(State {
             cursor_position: Point::ORIGIN,
+            floating_bounds: Vec::new(),
         })
     }
 
@@ -258,6 +293,7 @@ where
         let cursor_position =
             tree.state.downcast_ref::<State>().cursor_position;
         let on_dismiss = self.on_dismiss.clone();
+        let dismiss_trigger = self.dismiss_trigger;
 
         let (content_children, floating_children) =
             tree.children.split_at_mut(1);
@@ -270,13 +306,50 @@ where
             translation,
         );
 
+        // Compute floating layouts sequentially for inter-floating positioning
+        let state = tree.state.downcast_mut::<State>();
+        state.floating_bounds.clear();
+
+        // Pre-compute all floating bounds first
+        for (floating, tree_state) in
+            self.floating.iter_mut().zip(floating_children.iter_mut())
+        {
+            let limits = layout::Limits::new(
+                Size::ZERO,
+                Size::new(viewport.width, viewport.height),
+            );
+            let content_layout = floating.content.as_widget_mut().layout(
+                tree_state,
+                renderer,
+                &limits,
+            );
+            let content_bounds = content_layout.bounds();
+
+            let position = floating.position.resolve(
+                parent_bounds,
+                cursor_position,
+                *viewport,
+                content_bounds,
+                &state.floating_bounds,
+            );
+            let clamped =
+                clamp_to_viewport(position, content_bounds.size(), *viewport);
+
+            state.floating_bounds
+                .push(Rectangle::new(clamped, content_bounds.size()));
+        }
+
+        // Now create overlays using the pre-computed bounds
+        let floating_bounds_clone = state.floating_bounds.clone();
+
         let floating_overlays: Vec<
             overlay::Element<'b, Message, Theme, Renderer>,
         > = self
             .floating
             .iter_mut()
             .zip(floating_children.iter_mut())
-            .map(|(floating, tree_state)| {
+            .enumerate()
+            .map(|(_idx, (floating, tree_state))| {
                 overlay::Element::new(Box::new(Overlay {
                     floating: &mut floating.content,
                     tree: tree_state,
@@ -284,6 +357,9 @@ where
                     parent_bounds,
                     cursor_position,
                     on_dismiss: on_dismiss.clone(),
+                    dismiss_trigger,
+                    floating_bounds_owned: floating_bounds_clone.clone(),
+                    index: floating.index,
                 }))
             })
             .collect();
@@ -320,6 +396,9 @@ struct Overlay<'a, 'b, Message, Theme, Renderer> {
     parent_bounds: Rectangle,
     cursor_position: Point,
     on_dismiss: Option<Message>,
+    dismiss_trigger: DismissTrigger,
+    floating_bounds_owned: Vec<Rectangle>,
+    index: f32,
 }
 
 impl<Message, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer>
@@ -340,40 +419,15 @@ where
 
         let content_bounds = content_layout.bounds();
 
-        let position = match self.position {
-            Position::Absolute(point) => point,
-            Position::Cursor { offset } => self.cursor_position + offset,
-            Position::FollowCursor => self.cursor_position,
-            pos => {
-                if let Some((anchor, offset)) = pos.parent_anchor_offset() {
-                    anchor.resolve(self.parent_bounds)
-                        + anchor.content_offset(content_bounds)
-                        + offset
-                } else if let Some((anchor, offset)) =
-                    pos.viewport_anchor_offset()
-                {
-                    anchor.resolve(viewport)
-                        + anchor.content_offset(content_bounds)
-                        + offset
-                } else {
-                    Point::ORIGIN
-                }
-            }
-        };
-
-        let mut clamped = position;
-        if clamped.x + content_bounds.width > viewport.x + viewport.width {
-            clamped.x = viewport.x + viewport.width - content_bounds.width;
-        }
-        if clamped.y + content_bounds.height > viewport.y + viewport.height {
-            clamped.y = viewport.y + viewport.height - content_bounds.height;
-        }
-        if clamped.x < viewport.x {
-            clamped.x = viewport.x;
-        }
-        if clamped.y < viewport.y {
-            clamped.y = viewport.y;
-        }
+        let position = self.position.resolve(
+            self.parent_bounds,
+            self.cursor_position,
+            viewport,
+            content_bounds,
+            &self.floating_bounds_owned,
+        );
+        let clamped =
+            clamp_to_viewport(position, content_bounds.size(), viewport);
 
         layout::Node::with_children(content_bounds.size(), vec![content_layout])
             .translate(Vector::new(clamped.x, clamped.y))
@@ -425,15 +479,14 @@ where
             );
         }
 
-        if let Some(ref on_dismiss) = self.on_dismiss {
-            if let Event::Mouse(mouse::Event::ButtonPressed(
-                mouse::Button::Left,
-            )) = event
-            {
-                if !cursor.is_over(layout.bounds()) {
-                    shell.publish(on_dismiss.clone());
-                }
-            }
+        if let Some(msg) = check_dismiss(
+            event,
+            cursor,
+            layout.bounds(),
+            self.dismiss_trigger,
+            &self.on_dismiss,
+        ) {
+            shell.publish(msg);
         }
     }
 
@@ -477,6 +530,6 @@ where
     }
 
     fn index(&self) -> f32 {
-        1.0
+        self.index
     }
 }
