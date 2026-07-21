@@ -94,20 +94,15 @@ pub use util::{check_dismiss, clamp_to_viewport};
 use iced::{Element, Point, Rectangle, Vector};
 
 /// Determines which mouse event triggers dismissal of floating content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DismissTrigger {
     /// Dismiss when left-clicking outside the floating content.
     LeftClickOutside,
     /// Dismiss when right-clicking outside the floating content.
     RightClickOutside,
     /// Dismiss when clicking any mouse button outside the floating content.
+    #[default]
     AnyClickOutside,
-}
-
-impl Default for DismissTrigger {
-    fn default() -> Self {
-        DismissTrigger::AnyClickOutside
-    }
 }
 
 /// Anchor point for positioning floating content.
@@ -128,7 +123,7 @@ impl Default for DismissTrigger {
 /// aligns with the target point.
 ///
 /// [`Anchor::Top`]: Anchor::Top
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Anchor {
     TopLeft,
     Top,
@@ -136,6 +131,7 @@ pub enum Anchor {
     Left,
     Center,
     Right,
+    #[default]
     BottomLeft,
     Bottom,
     BottomRight,
@@ -193,12 +189,6 @@ impl Anchor {
                 Vector::new(-content.width, -content.height)
             }
         }
-    }
-}
-
-impl Default for Anchor {
-    fn default() -> Self {
-        Anchor::BottomLeft
     }
 }
 

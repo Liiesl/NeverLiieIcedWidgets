@@ -18,7 +18,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-never-lie-iced-widgets = { path = "path/to/NeverLiieIcedWidgets" }
+neverliie-iced-widgets = { path = "path/to/NeverLiieIcedWidgets" }
 iced = { version = "0.14", features = ["default", "advanced"] }
 ```
 
@@ -27,7 +27,7 @@ iced = { version = "0.14", features = ["default", "advanced"] }
 ```rust
 use iced::widget::{button, text};
 use iced::{Element, Vector};
-use never_lie_iced_widgets::overlay::{Floating, OverlayManager, Position};
+use neverliie_iced_widgets::overlay::{Floating, OverlayManager, Position};
 
 enum Message {
     ShowPopup,

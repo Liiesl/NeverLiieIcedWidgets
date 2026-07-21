@@ -52,6 +52,7 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         menu: &'a Menu<'b, Message>,
         state: &'a mut MenuState,
@@ -534,15 +535,13 @@ where
         iced::keyboard::key::Named::ArrowRight,
     ) => {
                         // Open submenu of hovered item
-                        if let Some(idx) = self.state.hovered_item {
-                            if let Some(MenuItem::Item(item)) =
+                        if let Some(idx) = self.state.hovered_item
+                            && let Some(MenuItem::Item(item)) =
                                 self.menu.items.get(idx)
-                            {
-                                if item.has_submenu() {
-                                    self.state.open_submenu_index = Some(idx);
-                                    shell.request_redraw();
-                                }
-                            }
+                            && item.has_submenu()
+                        {
+                            self.state.open_submenu_index = Some(idx);
+                            shell.request_redraw();
                         }
                     }
                     iced::keyboard::Key::Named(
@@ -557,20 +556,18 @@ where
                     iced::keyboard::Key::Named(
                         iced::keyboard::key::Named::Enter,
                     ) => {
-                        if let Some(idx) = self.state.hovered_item {
-                            if let Some(MenuItem::Item(item)) =
+                        if let Some(idx) = self.state.hovered_item
+                            && let Some(MenuItem::Item(item)) =
                                 self.menu.items.get(idx)
+                        {
+                            if item.has_submenu() {
+                                self.state.open_submenu_index = Some(idx);
+                                shell.request_redraw();
+                            } else if item.is_enabled()
+                                && let Some(action) = item.action.clone()
                             {
-                                if item.has_submenu() {
-                                    self.state.open_submenu_index = Some(idx);
-                                    shell.request_redraw();
-                                } else if item.is_enabled() {
-                                    if let Some(action) = item.action.clone()
-                                    {
-                                        shell.publish(action);
-                                        shell.capture_event();
-                                    }
-                                }
+                                shell.publish(action);
+                                shell.capture_event();
                             }
                         }
                     }
@@ -607,43 +604,43 @@ where
         layout: Layout<'c>,
         _renderer: &Renderer,
     ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
-        if let Some(parent_idx) = self.state.open_submenu_index {
-            if let Some(sub_menu) = self.submenu(parent_idx) {
-                let bounds = layout.bounds();
-                let y_off = self.item_y_offset(parent_idx);
+        if let Some(parent_idx) = self.state.open_submenu_index
+            && let Some(sub_menu) = self.submenu(parent_idx)
+        {
+            let bounds = layout.bounds();
+            let y_off = self.item_y_offset(parent_idx);
 
-                let submenu_x = bounds.x + bounds.width;
-                let submenu_y = bounds.y + y_off;
+            let submenu_x = bounds.x + bounds.width;
+            let submenu_y = bounds.y + y_off;
 
-                // Ensure submenu state exists
-                if self.state.submenu_state.is_none() {
-                    self.state.submenu_state = Some(Box::new(MenuState::new()));
-                }
-
-                let sub_state = self.state.submenu_state.as_mut().unwrap();
-                let dismiss = self.dismiss_message.clone();
-                let font = self.font;
-                let text_size = self.text_size;
-                let viewport = self.viewport;
-
-                let sub_menu_ref: &'c Menu<'b, Message> = &*sub_menu;
-                let state_ref: &'c mut MenuState = sub_state;
-                let class_ref: &'c <Theme as Catalog>::Class<'b> = &*self.class;
-
-                return Some(overlay::Element::new(Box::new(
-                    MenuOverlay {
-                        menu: sub_menu_ref,
-                        state: state_ref,
-                        position: Point::new(submenu_x, submenu_y),
-                        viewport,
-                        class: class_ref,
-                        text_size,
-                        dismiss_message: dismiss,
-                        font,
-                        is_root: false,
-                    },
-                )));
+            // Ensure submenu state exists
+            if self.state.submenu_state.is_none() {
+                self.state.submenu_state = Some(Box::new(MenuState::new()));
             }
+
+            let sub_state = self.state.submenu_state.as_mut().unwrap();
+            let dismiss = self.dismiss_message.clone();
+            let font = self.font;
+            let text_size = self.text_size;
+            let viewport = self.viewport;
+
+            let sub_menu_ref: &'c Menu<'b, Message> = sub_menu;
+            let state_ref: &'c mut MenuState = sub_state;
+            let class_ref: &'c <Theme as Catalog>::Class<'b> = self.class;
+
+            return Some(overlay::Element::new(Box::new(
+                MenuOverlay {
+                    menu: sub_menu_ref,
+                    state: state_ref,
+                    position: Point::new(submenu_x, submenu_y),
+                    viewport,
+                    class: class_ref,
+                    text_size,
+                    dismiss_message: dismiss,
+                    font,
+                    is_root: false,
+                },
+            )));
         }
 
         None

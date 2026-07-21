@@ -15,7 +15,7 @@ fn has_nested_dismiss(state: &MenuState) -> bool {
     state
         .submenu_state
         .as_ref()
-        .map_or(false, |s| s.dismissed || has_nested_dismiss(s))
+        .is_some_and(|s| s.dismissed || has_nested_dismiss(s))
 }
 
 struct State {
@@ -205,14 +205,13 @@ where
 
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) =
             event
+            && cursor.is_over(layout.bounds())
         {
-            if cursor.is_over(layout.bounds()) {
-                state.is_open = true;
-                state.menu_state = MenuState::new();
-                state.cursor_position = cursor.position().unwrap_or(state.cursor_position);
-                shell.request_redraw();
-                shell.capture_event();
-            }
+            state.is_open = true;
+            state.menu_state = MenuState::new();
+            state.cursor_position = cursor.position().unwrap_or(state.cursor_position);
+            shell.request_redraw();
+            shell.capture_event();
         }
     }
 

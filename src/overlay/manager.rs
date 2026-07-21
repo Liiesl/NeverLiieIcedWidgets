@@ -348,8 +348,7 @@ where
             .floating
             .iter_mut()
             .zip(floating_children.iter_mut())
-            .enumerate()
-            .map(|(_idx, (floating, tree_state))| {
+            .map(|(floating, tree_state)| {
                 overlay::Element::new(Box::new(Overlay {
                     floating: &mut floating.content,
                     tree: tree_state,
