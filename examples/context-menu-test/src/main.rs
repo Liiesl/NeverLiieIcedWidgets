@@ -1,15 +1,27 @@
 use iced::widget::{column, container, rule, scrollable, text};
-use iced::{Element, Length};
+use iced::{Element, Length, Task, Theme};
 
 use neverliie_iced_widgets::context_menu::{ContextMenu, Menu};
 
 fn main() -> iced::Result {
-    iced::run(App::update, App::view)
+    iced::application(App::new, App::update, App::view)
+        .theme(App::theme)
+        .run()
 }
 
 struct App {
     log: Vec<String>,
     counters: [i32; 4],
+}
+
+impl App {
+    fn new() -> (Self, Task<Message>) {
+        (Self::default(), Task::none())
+    }
+
+    fn theme(&self) -> Theme {
+        Theme::Dracula
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +40,24 @@ enum Message {
     Save,
     SaveAs,
     Exit,
+    // Encoding submenu
+    EncodingUtf8,
+    EncodingUtf16Le,
+    EncodingUtf16Be,
+    ConvertToUtf8,
+    ConvertToLf,
+    // Line Endings submenu
+    LineEndingLf,
+    LineEndingCrlf,
+    LineEndingCr,
+    // Tab Width submenu
+    TabWidth1,
+    TabWidth2,
+    TabWidth4,
+    TabWidth8,
+    // Indentation submenu
+    IndentIncrease,
+    IndentDecrease,
     // Misc
     Duplicate,
     Delete,
@@ -57,6 +87,20 @@ impl App {
             Message::Save => "Free area: Save".into(),
             Message::SaveAs => "Free area: Save As".into(),
             Message::Exit => "Free area: Exit".into(),
+            Message::EncodingUtf8 => "Encoding: UTF-8".into(),
+            Message::EncodingUtf16Le => "Encoding: UTF-16 LE".into(),
+            Message::EncodingUtf16Be => "Encoding: UTF-16 BE".into(),
+            Message::ConvertToUtf8 => "Encoding: Convert to UTF-8".into(),
+            Message::ConvertToLf => "Encoding: Convert to LF".into(),
+            Message::LineEndingLf => "Line Endings: LF (Unix)".into(),
+            Message::LineEndingCrlf => "Line Endings: CRLF (Windows)".into(),
+            Message::LineEndingCr => "Line Endings: CR (Old Mac)".into(),
+            Message::TabWidth1 => "Tab Width: 1".into(),
+            Message::TabWidth2 => "Tab Width: 2".into(),
+            Message::TabWidth4 => "Tab Width: 4".into(),
+            Message::TabWidth8 => "Tab Width: 8".into(),
+            Message::IndentIncrease => "Indentation: Increase Indent".into(),
+            Message::IndentDecrease => "Indentation: Decrease Indent".into(),
             Message::ButtonAction(idx, action) => {
                 self.counters[idx] += 1;
                 format!("Button {}: {} (clicked {}x)", idx + 1, action, self.counters[idx])
@@ -137,17 +181,17 @@ impl App {
 impl App {
     fn free_area_menu(&self) -> Menu<'_, Message> {
         let encoding_menu = Menu::new()
-            .item("UTF-8", Message::Save)
-            .item("UTF-16 LE", Message::Save)
-            .item("UTF-16 BE", Message::Save)
+            .item("UTF-8", Message::EncodingUtf8)
+            .item("UTF-16 LE", Message::EncodingUtf16Le)
+            .item("UTF-16 BE", Message::EncodingUtf16Be)
             .separator()
-            .item("Convert to UTF-8", Message::SaveAs)
-            .item("Convert to LF", Message::SaveAs);
+            .item("Convert to UTF-8", Message::ConvertToUtf8)
+            .item("Convert to LF", Message::ConvertToLf);
 
         let line_endings_menu = Menu::new()
-            .item("LF (Unix)", Message::Save)
-            .item("CRLF (Windows)", Message::Save)
-            .item("CR (Old Mac)", Message::Save);
+            .item("LF (Unix)", Message::LineEndingLf)
+            .item("CRLF (Windows)", Message::LineEndingCrlf)
+            .item("CR (Old Mac)", Message::LineEndingCr);
 
         let file_menu = Menu::new()
             .item("Open", Message::Open)
@@ -165,15 +209,15 @@ impl App {
             .shortcut("Alt+F4");
 
         let tab_width_menu = Menu::new()
-            .item("1", Message::Undo)
-            .item("2", Message::Undo)
-            .item("4", Message::Undo)
-            .item("8", Message::Undo);
+            .item("1", Message::TabWidth1)
+            .item("2", Message::TabWidth2)
+            .item("4", Message::TabWidth4)
+            .item("8", Message::TabWidth8);
 
         let indent_menu = Menu::new()
-            .item("Increase Indent", Message::Undo)
+            .item("Increase Indent", Message::IndentIncrease)
             .shortcut("Tab")
-            .item("Decrease Indent", Message::Undo)
+            .item("Decrease Indent", Message::IndentDecrease)
             .shortcut("Shift+Tab")
             .separator()
             .submenu("Tab Width", tab_width_menu);

@@ -102,6 +102,13 @@ where
         self
     }
 
+    /// Sets the style class of the [`ContextMenu`].
+    #[must_use]
+    pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
+        self.class = class.into();
+        self
+    }
+
     /// Sets the text size for menu items.
     #[must_use]
     pub fn text_size(mut self, size: f32) -> Self {
@@ -170,6 +177,21 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+
+        if shell.is_event_captured() {
+            return;
+        }
+
         let state = tree.state.downcast_mut::<State>();
 
         let should_dismiss = state.menu_state.dismissed
@@ -185,26 +207,13 @@ where
             event
         {
             if cursor.is_over(layout.bounds()) {
-                // Close old menu if open, then open new one
                 state.is_open = true;
                 state.menu_state = MenuState::new();
                 state.cursor_position = cursor.position().unwrap_or(state.cursor_position);
                 shell.request_redraw();
                 shell.capture_event();
-                return;
             }
         }
-
-        self.content.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
-        );
     }
 
     fn draw(
@@ -283,9 +292,15 @@ where
             );
         }
 
-        let dismiss_message = self.on_dismiss.clone().unwrap_or_else(|| {
-            unreachable!("ContextMenu requires on_dismiss to be set")
-        });
+        let Some(dismiss_message) = self.on_dismiss.clone() else {
+            return self.content.as_widget_mut().overlay(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                viewport,
+                Vector::ZERO,
+            );
+        };
 
         let menu_position = state.cursor_position;
 
