@@ -6,4 +6,4 @@ publish = false
 
 [dependencies]
 iced = { path = "../../iced", features = ["default", "advanced"] }
-never-lie-iced-widgets = { path = "../.." }
+neverliie-iced-widgets = { path = "../.." }

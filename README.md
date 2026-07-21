@@ -1,4 +1,4 @@
-# NeverLie Iced Widgets
+# NeverLiie Iced Widgets
 
 A clean, reusable widget library for [iced](https://iced.rs) — Elm-inspired GUI library for Rust.
 
