@@ -30,6 +30,8 @@ impl App {
             text("Widget Demos").size(14),
             button(text("Overlay").width(Length::Fill))
                 .on_press(Message::RunDemo("overlay-test")),
+            button(text("Context Menu").width(Length::Fill))
+                .on_press(Message::RunDemo("context-menu-test")),
         ]
         .spacing(8)
         .padding(24);

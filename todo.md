@@ -1,4 +1,4 @@
-# NeverLie Iced Widgets - Todo
+# NeverLiie Iced Widgets - Todo
 
 ## Input
 - [x] TextInput - single-line text input (iced: `text_input` - complete, supports secure/clipboard/IME)
@@ -52,7 +52,7 @@
 - [x] Spacer - flexible spacing (iced: `space` - basic)
 
 ## Advanced/Complex
-- [ ] ContextMenu - right-click floating menu (missing)
+- [ ] ContextMenu - right-click floating menu 
 - [x] Overlay/Popover - arbitrary positioned floating content (`src/overlay/` - OverlayManager + Floating + Position/Anchor system)
 - [ ] Resizer - resizable container panes (missing, pane_grid has resize but no standalone resizer)
 - [ ] ColorPicker - color selection widget (missing)

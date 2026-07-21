@@ -9,6 +9,7 @@
 //! ## Available Widgets
 //!
 //! - [`overlay`] — Floating content positioned relative to parent, viewport, or cursor
+//! - [`context_menu`] — Right-click context menu with submenu support
 //!
 //! ## Quick Start
 //!
@@ -39,4 +40,5 @@
 //! }
 //! ```
 
+pub mod context_menu;
 pub mod overlay;
