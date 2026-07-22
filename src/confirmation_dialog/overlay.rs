@@ -50,6 +50,7 @@ where
     class: &'a <Theme as Catalog>::Class<'b>,
     font: Renderer::Font,
     blocking: bool,
+    no_pointer: bool,
 }
 
 impl<'a, 'b, Message, Theme, Renderer> DialogOverlay<'a, 'b, Message, Theme, Renderer>
@@ -66,6 +67,7 @@ where
         class: &'a <Theme as Catalog>::Class<'b>,
         font: Renderer::Font,
         blocking: bool,
+        no_pointer: bool,
     ) -> Self {
         Self {
             title,
@@ -76,6 +78,7 @@ where
             class,
             font,
             blocking,
+            no_pointer,
         }
     }
 
@@ -436,6 +439,10 @@ where
         cursor: mouse::Cursor,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
+        if self.no_pointer {
+            return mouse::Interaction::default();
+        }
+
         if let Some(pos) = cursor.position() {
             if self.dialog_bounds().contains(pos) && self.button_at(pos).is_some() {
                 mouse::Interaction::Pointer
