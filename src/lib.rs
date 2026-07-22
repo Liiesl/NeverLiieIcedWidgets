@@ -20,7 +20,6 @@
 //!
 //! enum Message {
 //!     ShowPopup,
-//!     DismissPopup,
 //! }
 //!
 //! fn view(show_popup: bool) -> Element<'_, Message> {
@@ -32,7 +31,6 @@
 //!                 Floating::new(text("Hello from overlay!"))
 //!                     .position(Position::BottomLeft),
 //!             )
-//!             .on_dismiss(Message::DismissPopup)
 //!             .into()
 //!     } else {
 //!         content.into()

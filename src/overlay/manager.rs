@@ -7,7 +7,7 @@ use iced::mouse;
 use iced::widget::container;
 use iced::{Element, Event, Length, Point, Rectangle, Size, Vector};
 
-use super::{check_dismiss, clamp_to_viewport, DismissTrigger, Floating, Position};
+use super::{clamp_to_viewport, Floating, Position};
 
 struct State {
     cursor_position: Point,
@@ -30,7 +30,6 @@ struct State {
 ///         Floating::new(popup)
 ///             .position(Position::Bottom),
 ///     )
-///     .on_dismiss(Message::Dismiss)
 ///     .into()
 /// ```
 ///
@@ -52,8 +51,6 @@ pub struct OverlayManager<
 > {
     content: Element<'a, Message, Theme, Renderer>,
     floating: Vec<Floating<'a, Message, Theme, Renderer>>,
-    on_dismiss: Option<Message>,
-    dismiss_trigger: DismissTrigger,
 }
 
 impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> {
@@ -64,8 +61,6 @@ impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> 
         Self {
             content: content.into(),
             floating: Vec::new(),
-            on_dismiss: None,
-            dismiss_trigger: DismissTrigger::default(),
         }
     }
 
@@ -76,44 +71,6 @@ impl<'a, Message, Theme, Renderer> OverlayManager<'a, Message, Theme, Renderer> 
         floating: Floating<'a, Message, Theme, Renderer>,
     ) -> Self {
         self.floating.push(floating);
-        self
-    }
-
-    /// Sets the message to emit when clicking outside all floating content.
-    ///
-    /// Uses [`DismissTrigger::AnyClickOutside`] by default — any mouse
-    /// button press outside the floating content triggers dismissal.
-    /// Use [`on_dismiss_left`] for left-click only, or
-    /// [`on_dismiss_trigger`] for full control.
-    ///
-    /// [`on_dismiss_left`]: Self::on_dismiss_left
-    /// [`on_dismiss_trigger`]: Self::on_dismiss_trigger
-    #[must_use]
-    pub fn on_dismiss(mut self, message: Message) -> Self {
-        self.on_dismiss = Some(message);
-        self.dismiss_trigger = DismissTrigger::AnyClickOutside;
-        self
-    }
-
-    /// Sets the message to emit when left-clicking outside all floating
-    /// content.
-    #[must_use]
-    pub fn on_dismiss_left(mut self, message: Message) -> Self {
-        self.on_dismiss = Some(message);
-        self.dismiss_trigger = DismissTrigger::LeftClickOutside;
-        self
-    }
-
-    /// Sets the message to emit when the specified dismiss trigger fires
-    /// outside all floating content.
-    #[must_use]
-    pub fn on_dismiss_trigger(
-        mut self,
-        message: Message,
-        trigger: DismissTrigger,
-    ) -> Self {
-        self.on_dismiss = Some(message);
-        self.dismiss_trigger = trigger;
         self
     }
 }
@@ -292,8 +249,6 @@ where
         let parent_bounds = layout.bounds() + translation;
         let cursor_position =
             tree.state.downcast_ref::<State>().cursor_position;
-        let on_dismiss = self.on_dismiss.clone();
-        let dismiss_trigger = self.dismiss_trigger;
 
         let (content_children, floating_children) =
             tree.children.split_at_mut(1);
@@ -355,8 +310,6 @@ where
                     position: floating.position,
                     parent_bounds,
                     cursor_position,
-                    on_dismiss: on_dismiss.clone(),
-                    dismiss_trigger,
                     floating_bounds_owned: floating_bounds_clone.clone(),
                     index: floating.index,
                 }))
@@ -394,8 +347,6 @@ struct Overlay<'a, 'b, Message, Theme, Renderer> {
     position: Position,
     parent_bounds: Rectangle,
     cursor_position: Point,
-    on_dismiss: Option<Message>,
-    dismiss_trigger: DismissTrigger,
     floating_bounds_owned: Vec<Rectangle>,
     index: f32,
 }
@@ -476,16 +427,6 @@ where
                 shell,
                 &viewport,
             );
-        }
-
-        if let Some(msg) = check_dismiss(
-            event,
-            cursor,
-            layout.bounds(),
-            self.dismiss_trigger,
-            &self.on_dismiss,
-        ) {
-            shell.publish(msg);
         }
     }
 

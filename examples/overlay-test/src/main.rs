@@ -213,7 +213,7 @@ impl App {
             manager = manager.overlay(Floating::new(popup(label)).position(pos));
         }
 
-        iced::widget::row![sidebar, manager.on_dismiss(Message::Dismiss)]
+        iced::widget::row![sidebar, manager]
             .spacing(0)
             .height(Length::Fill)
             .into()

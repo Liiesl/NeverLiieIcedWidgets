@@ -1,6 +1,6 @@
 use iced::{Point, Rectangle};
 
-use super::{DismissTrigger, Position};
+use super::Position;
 
 impl Position {
     /// Resolves this position to a [`Point`] given the current context.
@@ -72,47 +72,4 @@ pub fn clamp_to_viewport(
         clamped.y = viewport.y;
     }
     clamped
-}
-
-/// Checks if a dismiss event occurred outside the given bounds.
-///
-/// Returns `Some(message)` if the dismiss trigger fired and the cursor
-/// is outside `bounds`. Returns `None` otherwise.
-pub fn check_dismiss<Message: Clone>(
-    event: &iced::Event,
-    cursor: iced::mouse::Cursor,
-    bounds: Rectangle,
-    trigger: DismissTrigger,
-    message: &Option<Message>,
-) -> Option<Message> {
-    let on_dismiss = message.as_ref()?;
-    let triggered = match trigger {
-        DismissTrigger::LeftClickOutside => {
-            matches!(
-                event,
-                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
-                    iced::mouse::Button::Left,
-                ))
-            )
-        }
-        DismissTrigger::RightClickOutside => {
-            matches!(
-                event,
-                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
-                    iced::mouse::Button::Right,
-                ))
-            )
-        }
-        DismissTrigger::AnyClickOutside => {
-            matches!(
-                event,
-                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
-            )
-        }
-    };
-    if triggered && !cursor.is_over(bounds) {
-        Some(on_dismiss.clone())
-    } else {
-        None
-    }
 }

@@ -20,7 +20,6 @@
 //!
 //! enum Message {
 //!     ShowPopup,
-//!     DismissPopup,
 //! }
 //!
 //! fn view(show_popup: bool) -> Element<'_, Message> {
@@ -32,7 +31,6 @@
 //!                 Floating::new(text("Hello from overlay!"))
 //!                     .position(Position::BottomLeft),
 //!             )
-//!             .on_dismiss(Message::DismissPopup)
 //!             .into()
 //!     } else {
 //!         content.into()
@@ -58,18 +56,6 @@
 //! Position::Floating { index: 0, anchor: Anchor::TopRight, offset: Vector::new(4.0, 0.0) }
 //! ```
 //!
-//! # Dismiss Triggers
-//!
-//! By default, floating content is dismissed when clicking anywhere outside
-//! it. You can customize this behavior with [`DismissTrigger`]:
-//!
-//! ```ignore
-//! OverlayManager::new(content)
-//!     .overlay(Floating::new(popup).position(Position::FollowCursor))
-//!     .on_dismiss_trigger(Message::Dismiss, DismissTrigger::LeftClickOutside)
-//!     .into()
-//! ```
-//!
 //! # Z-Index
 //!
 //! Floating elements support z-index ordering via [`Floating::index`]:
@@ -83,27 +69,14 @@
 //! [`OverlayManager`]: struct.OverlayManager
 //! [`Floating`]: struct.Floating
 //! [`Position`]: enum.Position
-//! [`DismissTrigger`]: enum.DismissTrigger
 
 mod manager;
 mod util;
 
 pub use manager::OverlayManager;
-pub use util::{check_dismiss, clamp_to_viewport};
+pub use util::clamp_to_viewport;
 
 use iced::{Element, Point, Rectangle, Vector};
-
-/// Determines which mouse event triggers dismissal of floating content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DismissTrigger {
-    /// Dismiss when left-clicking outside the floating content.
-    LeftClickOutside,
-    /// Dismiss when right-clicking outside the floating content.
-    RightClickOutside,
-    /// Dismiss when clicking any mouse button outside the floating content.
-    #[default]
-    AnyClickOutside,
-}
 
 /// Anchor point for positioning floating content.
 ///
