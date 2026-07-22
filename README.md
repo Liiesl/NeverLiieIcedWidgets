@@ -13,6 +13,7 @@ This library provides additional widgets for iced that are not available in the 
 | [Overlay](docs/overlay.md) | Floating content positioned relative to parent, viewport, or cursor | Stable |
 | [Context Menu](docs/context_menu.md) | Right-click context menu with submenu support | Stable |
 | [Confirmation Dialog](docs/confirmation_dialog.md) | Modal confirmation dialog with configurable buttons | Stable |
+| [Slider Tooltip](docs/slider_tooltip.md) | Slider with floating value tooltip during hover and drag | Stable |
 
 ## Installation
 
