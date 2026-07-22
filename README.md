@@ -11,6 +11,8 @@ This library provides additional widgets for iced that are not available in the 
 | Widget | Description | Status |
 |--------|-------------|--------|
 | [Overlay](docs/overlay.md) | Floating content positioned relative to parent, viewport, or cursor | Stable |
+| [Context Menu](docs/context_menu.md) | Right-click context menu with submenu support | Stable |
+| [Confirmation Dialog](docs/confirmation_dialog.md) | Modal confirmation dialog with configurable buttons | Stable |
 
 ## Installation
 
