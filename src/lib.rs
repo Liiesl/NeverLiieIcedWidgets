@@ -42,3 +42,4 @@
 pub mod confirmation_dialog;
 pub mod context_menu;
 pub mod overlay;
+pub mod slider_tooltip;

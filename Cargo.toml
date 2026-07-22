@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 iced = { path = "iced", features = ["default", "advanced"] }
+num-traits = "0.2"
 
 [workspace]
 members = ["examples/*"]
