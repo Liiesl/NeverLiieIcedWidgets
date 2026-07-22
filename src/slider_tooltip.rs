@@ -13,10 +13,7 @@ use iced::{
     Vector,
 };
 use std::ops::RangeInclusive;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-
-static SLIDER_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 const DEFAULT_HANDLE_WIDTH: f32 = 14.0;
 
@@ -30,7 +27,6 @@ pub struct SliderTooltip<
 > where
     Theme: slider::Catalog,
 {
-    id: u32,
     slider: Element<'a, Message, Theme, Renderer>,
     value: T,
     range: RangeInclusive<T>,
@@ -56,9 +52,7 @@ where
         F: 'a + Fn(T) -> Message,
     {
         let format = Self::make_format(range.clone());
-        let id = SLIDER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
-            id,
             slider: Element::new(Slider::new(range.clone(), value, on_change)),
             value,
             range,
@@ -225,9 +219,6 @@ where
         let state = tree.state.downcast_mut::<TooltipState>();
         state.cursor_position = cursor;
         let cursor_over = cursor.is_over(bounds);
-        let id = self.id;
-
-        let _was_hovering = state.is_hovering;
 
         match event {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -235,12 +226,10 @@ where
                     state.is_hovering = true;
                     state.hover_started_at = Some(now);
                     shell.request_redraw();
-                    eprintln!("[update] id={} >>> HOVER ENTER | bounds={:?} cursor={:?}", id, bounds, cursor);
                 } else if !cursor_over && state.is_hovering {
                     state.is_hovering = false;
                     state.hover_started_at = None;
                     shell.request_redraw();
-                    eprintln!("[update] id={} <<< HOVER EXIT  | bounds={:?} cursor={:?}", id, bounds, cursor);
                 }
                 if state.is_hovering
                     && state.hover_started_at.is_some()
@@ -255,7 +244,6 @@ where
                     state.is_dragging = true;
                     state.hover_started_at = None;
                     shell.request_redraw();
-                    eprintln!("[update] id={} >>> DRAG START  | bounds={:?}", id, bounds);
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(
@@ -266,7 +254,6 @@ where
                 if state.is_dragging {
                     state.is_dragging = false;
                     shell.request_redraw();
-                    eprintln!("[update] id={} <<< DRAG END    | bounds={:?}", id, bounds);
                 }
             }
             Event::Window(iced::window::Event::RedrawRequested(_)) => {
@@ -275,7 +262,6 @@ where
                         if now.duration_since(started) >= self.tooltip_delay {
                             state.hover_started_at = None;
                             shell.request_redraw();
-                            eprintln!("[update] id={} *** DELAY ELAPSED, TOOLTIP NOW ACTIVE", id);
                         }
                     }
                 }
@@ -305,16 +291,6 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let state = tree.state.downcast_ref::<TooltipState>();
-        let bounds = layout.bounds();
-        let should_show = state.is_dragging
-            || (state.is_hovering && state.hover_started_at.is_none());
-        eprintln!(
-            "[draw] id={} | bounds={:?} cursor={:?} cursor_over={} | is_hovering={} hover_started_at={:?} is_dragging={} should_show={}",
-            self.id, bounds, cursor, cursor.is_over(bounds),
-            state.is_hovering, state.hover_started_at, state.is_dragging, should_show
-        );
-
         self.slider.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -357,12 +333,6 @@ where
         let cursor_over = state.cursor_position.is_over(layout.bounds());
         let bounds = layout.bounds();
         let visible = should_show && cursor_over;
-
-        eprintln!(
-            "[overlay] id={} | bounds={:?} cursor={:?} cursor_over={} | is_hovering={} hover_started_at={:?} is_dragging={} should_show={} -> {}",
-            self.id, bounds, state.cursor_position, cursor_over, state.is_hovering, state.hover_started_at, state.is_dragging, should_show,
-            if visible { "VISIBLE" } else { "hidden" }
-        );
 
         let tooltip_text = if visible {
             (self.tooltip_format)(self.value)
@@ -439,7 +409,6 @@ where
             self.tooltip_style.as_deref();
 
         Some(overlay::Element::new(Box::new(TooltipOverlay {
-            id: self.id,
             visible,
             text: tooltip_text,
             bounds: tooltip_bounds,
@@ -469,7 +438,6 @@ where
 }
 
 struct TooltipOverlay<'a, 'b, Theme> {
-    id: u32,
     visible: bool,
     text: String,
     bounds: Rectangle,
@@ -506,8 +474,6 @@ where
         if !self.visible {
             return;
         }
-
-        eprintln!("[overlay::draw] id={} RENDERING tooltip at {:?}", self.id, self.bounds);
 
         let style = self
             .style
