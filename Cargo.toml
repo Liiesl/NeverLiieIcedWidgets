@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { path = "iced", features = ["default", "advanced"] }
+iced = { version = "0.14", features = ["default", "advanced"] }
 
 [workspace]
 members = ["examples/*"]
-exclude = ["iced"]
