@@ -75,6 +75,26 @@
 //!     .into()
 //! ```
 //!
+//! # Pointer Cursor Override
+//!
+//! Call [`.no_pointer()`](ConfirmationDialog::no_pointer) to prevent the
+//! dialog overlay from claiming the cursor interaction. When enabled, the
+//! overlay always returns the default cursor, keeping the base cursor
+//! available to widgets underneath the dialog. This preserves hover
+//! detection (enter/exit events) in the widget tree below.
+//!
+//! The trade-off is that the mouse cursor won't change to a pointer when
+//! hovering dialog buttons. Button hover visual feedback (the brightened
+//! background) still works.
+//!
+//! ```ignore
+//! ConfirmationDialog::new(content, true, "Delete?", "This cannot be undone.")
+//!     .on_confirm(Message::Delete)
+//!     .on_cancel(Message::Cancel)
+//!     .no_pointer()
+//!     .into()
+//! ```
+//!
 //! # Theming
 //!
 //! Styling is controlled via the [`Catalog`] trait, implemented by

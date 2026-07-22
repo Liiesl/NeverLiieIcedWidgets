@@ -66,6 +66,7 @@ where
     on_dismiss: Option<Message>,
     class: Theme::Class<'a>,
     blocking: bool,
+    no_pointer: bool,
 }
 
 impl<'a, Message, Theme, Renderer> ConfirmationDialog<'a, Message, Theme, Renderer>
@@ -93,6 +94,7 @@ where
             on_dismiss: None,
             class: Theme::default(),
             blocking: false,
+            no_pointer: false,
         }
     }
 
@@ -140,6 +142,23 @@ where
     #[must_use]
     pub fn blocking(mut self) -> Self {
         self.blocking = true;
+        self
+    }
+
+    /// Prevents the dialog overlay from claiming the cursor interaction.
+    ///
+    /// When enabled, the overlay always returns the default cursor instead
+    /// of a pointer, so the base cursor stays available to widgets
+    /// underneath the dialog. This preserves hover detection (enter/exit
+    /// events) in the widget tree below.
+    ///
+    /// The trade-off is that the mouse cursor won't change to a pointer
+    /// when hovering dialog buttons. Button hover visual feedback (the
+    /// brightened background) still works since it's drawn independently
+    /// in the overlay.
+    #[must_use]
+    pub fn no_pointer(mut self) -> Self {
+        self.no_pointer = true;
         self
     }
 
@@ -342,6 +361,7 @@ where
             &self.class,
             renderer.default_font(),
             self.blocking,
+            self.no_pointer,
         )));
 
         match content_overlay {
