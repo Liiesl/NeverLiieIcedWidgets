@@ -485,6 +485,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "confirmation-dialog-test"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "neverliie-iced-widgets",
+]
+
+[[package]]
 name = "context-menu-test"
 version = "0.1.0"
 dependencies = [

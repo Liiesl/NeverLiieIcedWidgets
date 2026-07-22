@@ -10,6 +10,7 @@
 //!
 //! - [`overlay`] — Floating content positioned relative to parent, viewport, or cursor
 //! - [`context_menu`] — Right-click context menu with submenu support
+//! - [`confirmation_dialog`] — Modal confirmation dialog with configurable buttons
 //!
 //! ## Quick Start
 //!
@@ -38,5 +39,6 @@
 //! }
 //! ```
 
+pub mod confirmation_dialog;
 pub mod context_menu;
 pub mod overlay;
