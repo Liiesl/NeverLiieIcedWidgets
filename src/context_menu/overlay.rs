@@ -234,19 +234,30 @@ where
 
         let mut position = self.position;
 
-        // Clamp to viewport
+        let max_x = (bounds.width - menu_size.width).max(0.0);
+        let max_y = (bounds.height - menu_size.height).max(0.0);
+
+        // Move the spawn anchor to the opposite corner when the menu
+        // would be clipped by the right or bottom edge of the viewport.
         if position.x + menu_size.width > bounds.width {
-            position.x = bounds.width - menu_size.width;
+            position.x = if position.x - menu_size.width >= 0.0 {
+                position.x - menu_size.width
+            } else {
+                max_x
+            };
         }
         if position.y + menu_size.height > bounds.height {
-            position.y = bounds.height - menu_size.height;
+            position.y = if position.y - menu_size.height >= 0.0 {
+                position.y - menu_size.height
+            } else {
+                max_y
+            };
         }
-        if position.x < 0.0 {
-            position.x = 0.0;
-        }
-        if position.y < 0.0 {
-            position.y = 0.0;
-        }
+
+        // Safety clamp (menu larger than viewport, or translation pushed
+        // the position off the top/left edge).
+        position.x = position.x.clamp(0.0, max_x);
+        position.y = position.y.clamp(0.0, max_y);
 
         layout::Node::new(menu_size)
             .translate(Vector::new(position.x, position.y))
