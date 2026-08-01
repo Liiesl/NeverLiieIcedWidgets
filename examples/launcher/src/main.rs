@@ -32,6 +32,8 @@ impl App {
                 .on_press(Message::RunDemo("overlay-test")),
             button(text("Context Menu").width(Length::Fill))
                 .on_press(Message::RunDemo("context-menu-test")),
+            button(text("Lazy Icon").width(Length::Fill))
+                .on_press(Message::RunDemo("lazy-icon-test")),
         ]
         .spacing(8)
         .padding(24);

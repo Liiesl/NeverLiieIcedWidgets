@@ -62,6 +62,6 @@
 ---
 
 ## Summary
-- **Existing (17/30):** TextInput, TextArea, PasswordInput, Button, Checkbox, Radio, Switch, PickList, ComboBox, Slider, ProgressBar, Scrollable, PaneGrid, TableView, Tooltip, Rule, Space, Overlay/Popover
+- **Existing (18/30):** TextInput, TextArea, PasswordInput, Button, Checkbox, Radio, Switch, PickList, ComboBox, Slider, ProgressBar, Scrollable, PaneGrid, TableView, Tooltip, Rule, Space, Overlay/Popover, LazyIcon
 - **Missing (19/36):** NumberInput, ToggleButton, IconButton, SplitButton, RangeSlider, CircularProgress, Tabs, Accordion, ListView, TreeView, MenuBar, Pagination, Breadcrumbs, Modal, Toast/Alert, Badge, ContextMenu, Resizer, ColorPicker, MultiSelect, VirtualList
 - **Needs Polish (3):** TextArea (too complex), ComboBox (complex API), Divider/Spacer (too basic)
