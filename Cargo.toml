@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { path = "iced", features = ["default", "advanced"] }
+iced = { path = "iced", features = ["default", "advanced", "image", "svg"] }
 num-traits = "0.2"
 
 [workspace]
 members = ["examples/*"]
+exclude = ["iced"]
