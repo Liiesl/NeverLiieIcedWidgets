@@ -1248,6 +1248,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-text-input-test"
+version = "0.1.0"
+dependencies = [
+ "iced 0.14.0",
+ "neverliie-iced-widgets",
+]
+
+[[package]]
 name = "gif"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2283,6 +2291,7 @@ version = "0.1.0"
 dependencies = [
  "iced 0.14.0",
  "num-traits",
+ "unicode-segmentation",
 ]
 
 [[package]]

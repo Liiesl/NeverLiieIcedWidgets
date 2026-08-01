@@ -1,0 +1,9 @@
+[package]
+name = "ghost-text-input-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+iced = { path = "../../iced", features = ["default", "advanced"] }
+neverliie-iced-widgets = { path = "../.." }
