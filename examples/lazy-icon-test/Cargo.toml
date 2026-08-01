@@ -5,5 +5,5 @@ edition = "2024"
 publish = false
 
 [dependencies]
-iced = { path = "../../iced", features = ["default", "advanced", "image", "svg"] }
+iced = { version = "0.14", features = ["default", "advanced", "image", "svg"] }
 neverliie-iced-widgets = { path = "../.." }
