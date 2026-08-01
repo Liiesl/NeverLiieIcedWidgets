@@ -2,6 +2,7 @@
 
 ## Input
 - [x] TextInput - single-line text input (iced: `text_input` - complete, supports secure/clipboard/IME)
+- [x] GhostTextInput - text input with animated ghost trail cursor (custom widget with cubic-bezier eased cursor animation)
 - [x] TextArea - multi-line text input (iced: `text_editor` - **needs polish**: it's a full code editor, too complex for simple textarea use case)
 - [ ] NumberInput - numeric input with increment/decrement (missing)
 - [x] PasswordInput - masked text input (iced: `text_input().secure(true)` - works but no dedicated widget)

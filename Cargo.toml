@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 iced = { version = "0.14", features = ["default", "advanced", "image", "svg"] }
 num-traits = "0.2"
+unicode-segmentation = "1.11"
 
 [workspace]
 members = ["examples/*"]

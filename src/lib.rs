@@ -11,6 +11,7 @@
 //! - [`overlay`] — Floating content positioned relative to parent, viewport, or cursor
 //! - [`context_menu`] — Right-click context menu with submenu support
 //! - [`confirmation_dialog`] — Modal confirmation dialog with configurable buttons
+//! - [`ghost_text_input`] — Text input with animated ghost trail cursor effect
 //! - [`lazy_icon`] — Lazy-loading icon widget with placeholder support
 //!
 //! ## Quick Start
@@ -42,6 +43,7 @@
 
 pub mod confirmation_dialog;
 pub mod context_menu;
+pub mod ghost_text_input;
 pub mod lazy_icon;
 pub mod overlay;
 pub mod slider_tooltip;
