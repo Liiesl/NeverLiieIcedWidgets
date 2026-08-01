@@ -63,6 +63,7 @@ where
     content: Element<'a, Message, Theme, Renderer>,
     menu: Menu<'a, Message>,
     on_dismiss: Option<Message>,
+    on_right_click: Option<Message>,
     class: Theme::Class<'a>,
     text_size: Option<f32>,
 }
@@ -80,6 +81,7 @@ where
             content: content.into(),
             menu,
             on_dismiss: None,
+            on_right_click: None,
             class: Theme::default(),
             text_size: None,
         }
@@ -89,6 +91,14 @@ where
     #[must_use]
     pub fn on_dismiss(mut self, message: Message) -> Self {
         self.on_dismiss = Some(message);
+        self
+    }
+
+    /// Sets the message to emit when the content is right-clicked, before
+    /// the menu opens.
+    #[must_use]
+    pub fn on_right_click(mut self, message: Message) -> Self {
+        self.on_right_click = Some(message);
         self
     }
 
@@ -210,6 +220,9 @@ where
             state.is_open = true;
             state.menu_state = MenuState::new();
             state.cursor_position = cursor.position().unwrap_or(state.cursor_position);
+            if let Some(message) = self.on_right_click.as_ref() {
+                shell.publish(message.clone());
+            }
             shell.request_redraw();
             shell.capture_event();
         }
