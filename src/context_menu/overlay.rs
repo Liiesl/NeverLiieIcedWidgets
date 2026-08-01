@@ -471,16 +471,23 @@ where
                             self.menu.items.get(idx)
                         {
                             if item.has_submenu() {
-                                // Open submenu (no toggle — closing happens
-                                // when hovering a different item or outside)
-                                if self.state.open_submenu_index != Some(idx) {
+                                // Toggle: clicking the parent item closes its
+                                // submenu, if open. Only that submenu is
+                                // dismissed — the root menu stays open.
+                                if self.state.open_submenu_index == Some(idx) {
+                                    self.state.open_submenu_index = None;
+                                    self.state.submenu_state = None;
+                                    shell.request_redraw();
+                                } else {
                                     self.state.open_submenu_index = Some(idx);
                                     shell.request_redraw();
                                 }
                                 shell.capture_event();
                             } else if let Some(action) = item.action.clone() {
+                                self.state.dismissed = true;
                                 shell.publish(action);
                                 shell.capture_event();
+                                shell.request_redraw();
                             } else {
                                 // Disabled item — consume the click
                                 shell.capture_event();
@@ -566,8 +573,10 @@ where
                             } else if item.is_enabled()
                                 && let Some(action) = item.action.clone()
                             {
+                                self.state.dismissed = true;
                                 shell.publish(action);
                                 shell.capture_event();
+                                shell.request_redraw();
                             }
                         }
                     }
