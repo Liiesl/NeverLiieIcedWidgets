@@ -348,8 +348,14 @@ where
 
         let state = tree.state.downcast_mut::<State>();
 
-        if !state.is_open {
+        if !self.is_open {
             return content_overlay;
+        }
+
+        // Sync state on first frame (overlay runs before update)
+        if !state.is_open {
+            state.is_open = true;
+            state.dialog_state = DialogState::new();
         }
 
         let dialog_overlay = overlay::Element::new(Box::new(DialogOverlay::new(
