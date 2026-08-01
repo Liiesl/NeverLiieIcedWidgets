@@ -234,19 +234,30 @@ where
 
         let mut position = self.position;
 
-        // Clamp to viewport
+        let max_x = (bounds.width - menu_size.width).max(0.0);
+        let max_y = (bounds.height - menu_size.height).max(0.0);
+
+        // Move the spawn anchor to the opposite corner when the menu
+        // would be clipped by the right or bottom edge of the viewport.
         if position.x + menu_size.width > bounds.width {
-            position.x = bounds.width - menu_size.width;
+            position.x = if position.x - menu_size.width >= 0.0 {
+                position.x - menu_size.width
+            } else {
+                max_x
+            };
         }
         if position.y + menu_size.height > bounds.height {
-            position.y = bounds.height - menu_size.height;
+            position.y = if position.y - menu_size.height >= 0.0 {
+                position.y - menu_size.height
+            } else {
+                max_y
+            };
         }
-        if position.x < 0.0 {
-            position.x = 0.0;
-        }
-        if position.y < 0.0 {
-            position.y = 0.0;
-        }
+
+        // Safety clamp (menu larger than viewport, or translation pushed
+        // the position off the top/left edge).
+        position.x = position.x.clamp(0.0, max_x);
+        position.y = position.y.clamp(0.0, max_y);
 
         layout::Node::new(menu_size)
             .translate(Vector::new(position.x, position.y))
@@ -619,7 +630,14 @@ where
             let bounds = layout.bounds();
             let y_off = self.item_y_offset(parent_idx);
 
-            let submenu_x = bounds.x + bounds.width;
+            let submenu_width =
+                measure_menu_width::<Message, Renderer>(sub_menu, self.text_size, self.font);
+
+            let submenu_x = if bounds.x + bounds.width + submenu_width > self.viewport.width {
+                bounds.x - submenu_width
+            } else {
+                bounds.x + bounds.width
+            };
             let submenu_y = bounds.y + y_off;
 
             // Ensure submenu state exists
@@ -729,4 +747,63 @@ where
             }
         }
     }
+}
+
+fn measure_menu_width<Message, Renderer: text::Renderer>(
+    menu: &Menu<'_, Message>,
+    text_size: f32,
+    font: Renderer::Font,
+) -> f32 {
+    let size = Pixels(text_size);
+    let line_height = text::LineHeight::Absolute(Pixels(text_size * 1.4));
+
+    let mut max_width = 0.0f32;
+
+    for item in &menu.items {
+        if let MenuItem::Item(item) = item {
+            let label_width = Renderer::Paragraph::with_text(Text {
+                content: item.label,
+                bounds: Size::new(f32::INFINITY, f32::INFINITY),
+                size,
+                line_height,
+                font,
+                align_x: text::Alignment::Left,
+                align_y: iced::alignment::Vertical::Top,
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            })
+            .min_width();
+
+            let shortcut_width = item
+                .shortcut
+                .map(|s| {
+                    Renderer::Paragraph::with_text(Text {
+                        content: s,
+                        bounds: Size::new(f32::INFINITY, f32::INFINITY),
+                        size: Pixels(text_size * 0.9),
+                        line_height: text::LineHeight::Absolute(Pixels(text_size * 1.2)),
+                        font,
+                        align_x: text::Alignment::Left,
+                        align_y: iced::alignment::Vertical::Top,
+                        shaping: text::Shaping::Basic,
+                        wrapping: text::Wrapping::None,
+                    })
+                    .min_width()
+                })
+                .unwrap_or(0.0);
+
+            let w = label_width + shortcut_width + super::SHORTCUT_SPACING;
+            if w > max_width {
+                max_width = w;
+            }
+        }
+    }
+
+    let has_submenus = menu
+        .items
+        .iter()
+        .any(|m| matches!(m, MenuItem::Item(item) if item.has_submenu()));
+    let submenu_arrow_space = if has_submenus { 20.0 } else { 0.0 };
+
+    max_width + submenu_arrow_space + super::ITEM_PADDING_X * 2.0
 }

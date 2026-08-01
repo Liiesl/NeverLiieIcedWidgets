@@ -290,7 +290,7 @@ where
         layout: Layout<'b>,
         renderer: &Renderer,
         viewport: &Rectangle,
-        _translation: Vector,
+        translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
 
@@ -314,7 +314,7 @@ where
             );
         };
 
-        let menu_position = state.cursor_position;
+        let menu_position = state.cursor_position + translation;
 
         Some(overlay::Element::new(Box::new(MenuOverlay::new(
             &self.menu,
