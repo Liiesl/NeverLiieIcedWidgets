@@ -12,6 +12,7 @@ fn main() -> iced::Result {
 struct App {
     log: Vec<String>,
     counters: [i32; 4],
+    stress_labels: Vec<String>,
 }
 
 impl App {
@@ -58,6 +59,8 @@ enum Message {
     // Indentation submenu
     IndentIncrease,
     IndentDecrease,
+    // Stress test
+    Stress(usize),
     // Misc
     Duplicate,
     Delete,
@@ -69,6 +72,9 @@ impl Default for App {
         Self {
             log: vec!["Right-click anywhere to open context menus.".into()],
             counters: [0; 4],
+            stress_labels: (0..20)
+                .map(|i| format!("Stress Item {i:02}"))
+                .collect(),
         }
     }
 }
@@ -101,6 +107,10 @@ impl App {
             Message::TabWidth8 => "Tab Width: 8".into(),
             Message::IndentIncrease => "Indentation: Increase Indent".into(),
             Message::IndentDecrease => "Indentation: Decrease Indent".into(),
+            Message::Stress(i) => format!(
+                "Stress: {}",
+                self.stress_labels.get(i).map_or("?", String::as_str)
+            ),
             Message::ButtonAction(idx, action) => {
                 self.counters[idx] += 1;
                 format!("Button {}: {} (clicked {}x)", idx + 1, action, self.counters[idx])
@@ -120,7 +130,8 @@ impl App {
                 text("Free Area").size(18),
                 rule::horizontal(1),
                 text("Right-click anywhere in this box.").size(13),
-                text("Has nested submenus (File > Encoding, Edit > Indentation > Tab Width).").size(11),
+                text("Every submenu has 20 extra stress items appended.").size(11),
+                text("File > Encoding, File > Line Endings, Edit > Indentation > Tab Width.").size(11),
                 text("").height(Length::Fill),
             ]
             .spacing(8)
@@ -179,73 +190,97 @@ impl App {
 }
 
 impl App {
+    /// Appends the 20 stress items to the given menu.
+    fn stress_pad<'a>(
+        &'a self,
+        menu: Menu<'a, Message>,
+    ) -> Menu<'a, Message> {
+        let mut menu = menu;
+        for (i, label) in self.stress_labels.iter().enumerate() {
+            menu = menu.item(label.as_str(), Message::Stress(i));
+        }
+        menu
+    }
+
     fn free_area_menu(&self) -> Menu<'_, Message> {
-        let encoding_menu = Menu::new()
-            .item("UTF-8", Message::EncodingUtf8)
-            .item("UTF-16 LE", Message::EncodingUtf16Le)
-            .item("UTF-16 BE", Message::EncodingUtf16Be)
-            .separator()
-            .item("Convert to UTF-8", Message::ConvertToUtf8)
-            .item("Convert to LF", Message::ConvertToLf);
+        let encoding_menu = self.stress_pad(
+            Menu::new()
+                .item("UTF-8", Message::EncodingUtf8)
+                .item("UTF-16 LE", Message::EncodingUtf16Le)
+                .item("UTF-16 BE", Message::EncodingUtf16Be)
+                .separator()
+                .item("Convert to UTF-8", Message::ConvertToUtf8)
+                .item("Convert to LF", Message::ConvertToLf),
+        );
 
-        let line_endings_menu = Menu::new()
-            .item("LF (Unix)", Message::LineEndingLf)
-            .item("CRLF (Windows)", Message::LineEndingCrlf)
-            .item("CR (Old Mac)", Message::LineEndingCr);
+        let line_endings_menu = self.stress_pad(
+            Menu::new()
+                .item("LF (Unix)", Message::LineEndingLf)
+                .item("CRLF (Windows)", Message::LineEndingCrlf)
+                .item("CR (Old Mac)", Message::LineEndingCr),
+        );
 
-        let file_menu = Menu::new()
-            .item("Open", Message::Open)
-            .shortcut("Ctrl+O")
-            .separator()
-            .item("Save", Message::Save)
-            .shortcut("Ctrl+S")
-            .item("Save As", Message::SaveAs)
-            .shortcut("Ctrl+Shift+S")
-            .separator()
-            .submenu("Encoding", encoding_menu)
-            .submenu("Line Endings", line_endings_menu)
-            .separator()
-            .item("Exit", Message::Exit)
-            .shortcut("Alt+F4");
+        let file_menu = self.stress_pad(
+            Menu::new()
+                .item("Open", Message::Open)
+                .shortcut("Ctrl+O")
+                .separator()
+                .item("Save", Message::Save)
+                .shortcut("Ctrl+S")
+                .item("Save As", Message::SaveAs)
+                .shortcut("Ctrl+Shift+S")
+                .separator()
+                .submenu("Encoding", encoding_menu)
+                .submenu("Line Endings", line_endings_menu)
+                .separator()
+                .item("Exit", Message::Exit)
+                .shortcut("Alt+F4"),
+        );
 
-        let tab_width_menu = Menu::new()
-            .item("1", Message::TabWidth1)
-            .item("2", Message::TabWidth2)
-            .item("4", Message::TabWidth4)
-            .item("8", Message::TabWidth8);
+        let tab_width_menu = self.stress_pad(
+            Menu::new()
+                .item("1", Message::TabWidth1)
+                .item("2", Message::TabWidth2)
+                .item("4", Message::TabWidth4)
+                .item("8", Message::TabWidth8),
+        );
 
-        let indent_menu = Menu::new()
-            .item("Increase Indent", Message::IndentIncrease)
-            .shortcut("Tab")
-            .item("Decrease Indent", Message::IndentDecrease)
-            .shortcut("Shift+Tab")
-            .separator()
-            .submenu("Tab Width", tab_width_menu);
+        let indent_menu = self.stress_pad(
+            Menu::new()
+                .item("Increase Indent", Message::IndentIncrease)
+                .shortcut("Tab")
+                .item("Decrease Indent", Message::IndentDecrease)
+                .shortcut("Shift+Tab")
+                .separator()
+                .submenu("Tab Width", tab_width_menu),
+        );
 
-        let editor_menu = Menu::new()
-            .item("Undo", Message::Undo)
-            .shortcut("Ctrl+Z")
-            .item_disabled("Redo")
-            .shortcut("Ctrl+Y")
-            .separator()
-            .item("Cut", Message::Cut)
-            .shortcut("Ctrl+X")
-            .item("Copy", Message::Copy)
-            .shortcut("Ctrl+C")
-            .item("Paste", Message::Paste)
-            .shortcut("Ctrl+V")
-            .item_disabled("Paste Special")
-            .shortcut("Ctrl+Shift+V")
-            .separator()
-            .item("Duplicate", Message::Duplicate)
-            .shortcut("Ctrl+Shift+D")
-            .item("Delete", Message::Delete)
-            .shortcut("Del")
-            .separator()
-            .submenu("Indentation", indent_menu)
-            .separator()
-            .item("Select All", Message::SelectAll)
-            .shortcut("Ctrl+A");
+        let editor_menu = self.stress_pad(
+            Menu::new()
+                .item("Undo", Message::Undo)
+                .shortcut("Ctrl+Z")
+                .item_disabled("Redo")
+                .shortcut("Ctrl+Y")
+                .separator()
+                .item("Cut", Message::Cut)
+                .shortcut("Ctrl+X")
+                .item("Copy", Message::Copy)
+                .shortcut("Ctrl+C")
+                .item("Paste", Message::Paste)
+                .shortcut("Ctrl+V")
+                .item_disabled("Paste Special")
+                .shortcut("Ctrl+Shift+V")
+                .separator()
+                .item("Duplicate", Message::Duplicate)
+                .shortcut("Ctrl+Shift+D")
+                .item("Delete", Message::Delete)
+                .shortcut("Del")
+                .separator()
+                .submenu("Indentation", indent_menu)
+                .separator()
+                .item("Select All", Message::SelectAll)
+                .shortcut("Ctrl+A"),
+        );
 
         Menu::new()
             .submenu("File", file_menu)

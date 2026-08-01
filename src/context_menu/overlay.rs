@@ -8,7 +8,8 @@ use iced::advanced::text::{self, Paragraph, Text};
 use iced::{Event, Pixels, Point, Rectangle, Size, Vector};
 
 use super::{
-    Catalog, Menu, MenuItem, ITEM_PADDING_X, ITEM_PADDING_Y, SEPARATOR_HEIGHT,
+    Catalog, Menu, MenuItem, SHORTCUT_SPACING, ITEM_PADDING_X, ITEM_PADDING_Y,
+    SEPARATOR_HEIGHT,
 };
 
 /// Shared state for the menu overlay, updated during event processing.
@@ -17,6 +18,12 @@ pub(crate) struct MenuState {
     pub open_submenu_index: Option<usize>,
     pub submenu_state: Option<Box<MenuState>>,
     pub dismissed: bool,
+    /// Cached text measurements of the currently displayed [`Menu`].
+    ///
+    /// Text shaping is expensive, so the menu contents are measured once and
+    /// the result is reused until the contents change (detected by a cheap
+    /// fingerprint comparison).
+    measured: Option<MeasuredMenu>,
 }
 
 impl MenuState {
@@ -26,7 +33,59 @@ impl MenuState {
             open_submenu_index: None,
             submenu_state: None,
             dismissed: false,
+            measured: None,
         }
+    }
+}
+
+/// Cached measurements of a [`Menu`].
+///
+/// Storing the measured text widths avoids re-shaping every label with
+/// `cosmic-text` on every frame. The results are only valid for the menu
+/// contents they were computed from; [`MeasuredMenu::matches`] performs a
+/// cheap fingerprint check against the current menu.
+struct MeasuredMenu {
+    /// Content fingerprint: for each entry in `menu.items`, the label and
+    /// shortcut strings (separators are `None`).
+    labels: Vec<Option<(String, Option<String>)>>,
+    /// Total menu width, including padding and submenu arrow space.
+    menu_width: f32,
+    /// Total menu height.
+    total_height: f32,
+    /// Text size (bit pattern) the measurements were computed with.
+    text_size: u32,
+}
+
+impl MeasuredMenu {
+    /// Returns `true` if these measurements still match the given menu.
+    fn matches<Message>(
+        &self,
+        menu: &Menu<'_, Message>,
+        text_size: f32,
+    ) -> bool {
+        if self.text_size != text_size.to_bits() {
+            return false;
+        }
+
+        if self.labels.len() != menu.items.len() {
+            return false;
+        }
+
+        for (cached, item) in self.labels.iter().zip(&menu.items) {
+            match (cached, item) {
+                (Some((label, shortcut)), MenuItem::Item(item)) => {
+                    if label != item.label
+                        || shortcut.as_deref() != item.shortcut
+                    {
+                        return false;
+                    }
+                }
+                (None, MenuItem::Separator) => {}
+                _ => return false,
+            }
+        }
+
+        true
     }
 }
 
@@ -87,19 +146,6 @@ where
         SEPARATOR_HEIGHT
     }
 
-    fn total_height(&self) -> f32 {
-        let ih = self.item_height();
-        let sh = self.separator_height();
-        let mut total = 0.0;
-        for item in &self.menu.items {
-            match item {
-                MenuItem::Item(_) => total += ih,
-                MenuItem::Separator => total += sh,
-            }
-        }
-        total
-    }
-
     fn measure_item_width(&self, _renderer: &Renderer, label: &str, shortcut: Option<&str>) -> f32 {
         let size = Pixels(self.text_size);
         let line_height = text::LineHeight::Absolute(Pixels(self.text_size * 1.4));
@@ -137,25 +183,63 @@ where
         label_width + shortcut_width + SHORTCUT_SPACING
     }
 
-    fn menu_width(&self, renderer: &Renderer) -> f32 {
-        let mut max_width = 0.0f32;
+    /// Ensures the measurements cached in `state.measured` match the given
+    /// menu, re-measuring (and re-shaping) the text only when the menu
+    /// contents have changed.
+    fn ensure_measured(&mut self, renderer: &Renderer, menu: &Menu<'b, Message>) {
+        let needs_measure = self
+            .state
+            .measured
+            .as_ref()
+            .is_none_or(|m| !m.matches(menu, self.text_size));
 
-        for item in &self.menu.items {
-            if let MenuItem::Item(item) = item {
-                let w = self.measure_item_width(renderer, item.label, item.shortcut);
-                if w > max_width {
-                    max_width = w;
+        if needs_measure {
+            self.state.measured = Some(self.measure_menu(renderer, menu));
+        }
+    }
+
+    fn measure_menu(
+        &self,
+        renderer: &Renderer,
+        menu: &Menu<'b, Message>,
+    ) -> MeasuredMenu {
+        let ih = self.item_height();
+        let sh = self.separator_height();
+
+        let mut labels = Vec::with_capacity(menu.items.len());
+        let mut max_width = 0.0f32;
+        let mut total_height = 0.0f32;
+        let mut has_submenus = false;
+
+        for item in &menu.items {
+            match item {
+                MenuItem::Item(item) => {
+                    let width =
+                        self.measure_item_width(renderer, item.label, item.shortcut);
+                    max_width = max_width.max(width);
+                    total_height += ih;
+                    has_submenus |= item.has_submenu();
+                    labels.push(Some((
+                        item.label.to_owned(),
+                        item.shortcut.map(str::to_owned),
+                    )));
+                }
+                MenuItem::Separator => {
+                    total_height += sh;
+                    labels.push(None);
                 }
             }
         }
 
         // Add right padding for submenu arrows
-        let has_submenus = self.menu.items.iter().any(|m| {
-            matches!(m, MenuItem::Item(item) if item.has_submenu())
-        });
         let submenu_arrow_space = if has_submenus { 20.0 } else { 0.0 };
 
-        max_width + submenu_arrow_space + ITEM_PADDING_X * 2.0
+        MeasuredMenu {
+            labels,
+            menu_width: max_width + submenu_arrow_space + ITEM_PADDING_X * 2.0,
+            total_height,
+            text_size: self.text_size.to_bits(),
+        }
     }
 
     fn item_at(&self, position: Point, bounds: Rectangle) -> Option<(usize, bool)> {
@@ -220,8 +304,6 @@ where
     }
 }
 
-use super::SHORTCUT_SPACING;
-
 impl<'a, 'b, Message, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer>
     for MenuOverlay<'a, 'b, Message, Theme, Renderer>
 where
@@ -230,7 +312,10 @@ where
     Renderer: renderer::Renderer + text::Renderer,
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let menu_size = Size::new(self.menu_width(renderer), self.total_height());
+        self.ensure_measured(renderer, self.menu);
+
+        let measured = self.state.measured.as_ref().unwrap();
+        let menu_size = Size::new(measured.menu_width, measured.total_height);
 
         let mut position = self.position;
 
@@ -622,7 +707,7 @@ where
     fn overlay<'c>(
         &'c mut self,
         layout: Layout<'c>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
     ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
         if let Some(parent_idx) = self.state.open_submenu_index
             && let Some(sub_menu) = self.submenu(parent_idx)
@@ -630,8 +715,36 @@ where
             let bounds = layout.bounds();
             let y_off = self.item_y_offset(parent_idx);
 
-            let submenu_width =
-                measure_menu_width::<Message, Renderer>(sub_menu, self.text_size, self.font);
+            // Ensure submenu state exists
+            if self.state.submenu_state.is_none() {
+                self.state.submenu_state = Some(Box::new(MenuState::new()));
+            }
+
+            // Reuse the submenu's cached measurements when its contents
+            // have not changed.
+            let needs_measure = self
+                .state
+                .submenu_state
+                .as_ref()
+                .and_then(|s| s.measured.as_ref())
+                .is_none_or(|m| !m.matches(sub_menu, self.text_size));
+
+            let submenu_width = if needs_measure {
+                let measured = self.measure_menu(renderer, sub_menu);
+                let width = measured.menu_width;
+                self.state.submenu_state.as_mut().unwrap().measured =
+                    Some(measured);
+                width
+            } else {
+                self.state
+                    .submenu_state
+                    .as_ref()
+                    .unwrap()
+                    .measured
+                    .as_ref()
+                    .unwrap()
+                    .menu_width
+            };
 
             let submenu_x = if bounds.x + bounds.width + submenu_width > self.viewport.width {
                 bounds.x - submenu_width
@@ -639,11 +752,6 @@ where
                 bounds.x + bounds.width
             };
             let submenu_y = bounds.y + y_off;
-
-            // Ensure submenu state exists
-            if self.state.submenu_state.is_none() {
-                self.state.submenu_state = Some(Box::new(MenuState::new()));
-            }
 
             let sub_state = self.state.submenu_state.as_mut().unwrap();
             let dismiss = self.dismiss_message.clone();
@@ -747,63 +855,4 @@ where
             }
         }
     }
-}
-
-fn measure_menu_width<Message, Renderer: text::Renderer>(
-    menu: &Menu<'_, Message>,
-    text_size: f32,
-    font: Renderer::Font,
-) -> f32 {
-    let size = Pixels(text_size);
-    let line_height = text::LineHeight::Absolute(Pixels(text_size * 1.4));
-
-    let mut max_width = 0.0f32;
-
-    for item in &menu.items {
-        if let MenuItem::Item(item) = item {
-            let label_width = Renderer::Paragraph::with_text(Text {
-                content: item.label,
-                bounds: Size::new(f32::INFINITY, f32::INFINITY),
-                size,
-                line_height,
-                font,
-                align_x: text::Alignment::Left,
-                align_y: iced::alignment::Vertical::Top,
-                shaping: text::Shaping::Basic,
-                wrapping: text::Wrapping::None,
-            })
-            .min_width();
-
-            let shortcut_width = item
-                .shortcut
-                .map(|s| {
-                    Renderer::Paragraph::with_text(Text {
-                        content: s,
-                        bounds: Size::new(f32::INFINITY, f32::INFINITY),
-                        size: Pixels(text_size * 0.9),
-                        line_height: text::LineHeight::Absolute(Pixels(text_size * 1.2)),
-                        font,
-                        align_x: text::Alignment::Left,
-                        align_y: iced::alignment::Vertical::Top,
-                        shaping: text::Shaping::Basic,
-                        wrapping: text::Wrapping::None,
-                    })
-                    .min_width()
-                })
-                .unwrap_or(0.0);
-
-            let w = label_width + shortcut_width + super::SHORTCUT_SPACING;
-            if w > max_width {
-                max_width = w;
-            }
-        }
-    }
-
-    let has_submenus = menu
-        .items
-        .iter()
-        .any(|m| matches!(m, MenuItem::Item(item) if item.has_submenu()));
-    let submenu_arrow_space = if has_submenus { 20.0 } else { 0.0 };
-
-    max_width + submenu_arrow_space + super::ITEM_PADDING_X * 2.0
 }
