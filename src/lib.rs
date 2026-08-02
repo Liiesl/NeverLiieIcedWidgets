@@ -13,6 +13,7 @@
 //! - [`confirmation_dialog`] — Modal confirmation dialog with configurable buttons
 //! - [`ghost_text_input`] — Text input with animated ghost trail cursor effect
 //! - [`lazy_icon`] — Lazy-loading icon widget with placeholder support
+//! - [`ellipsis_text`] — Line-clamped text with ellipsis truncation
 //!
 //! ## Quick Start
 //!
@@ -43,6 +44,7 @@
 
 pub mod confirmation_dialog;
 pub mod context_menu;
+pub mod ellipsis_text;
 pub mod ghost_text_input;
 pub mod lazy_icon;
 pub mod overlay;
