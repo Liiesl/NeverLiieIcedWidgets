@@ -18,6 +18,7 @@
 //! use iced::Element;
 //! use neverlie_iced_widgets::confirmation_dialog::ConfirmationDialog;
 //!
+//! #[derive(Clone)]
 //! enum Message {
 //!     Delete,
 //!     Cancel,
@@ -145,10 +146,10 @@ impl<'a, Message> DialogButton<'a, Message> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonStyle {
     /// Subtle button matching the dialog background, with a faint border.
-    /// Used by default for the confirm action.
+    /// Used by default for the cancel action.
     Secondary,
     /// Primary/colored button appearance.
-    /// Used by default for the cancel action.
+    /// Used by default for the confirm action.
     Default,
     /// Danger/destructive action appearance.
     Danger,

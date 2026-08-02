@@ -10,7 +10,7 @@
 //!
 //! ```no_run
 //! use iced::Element;
-//! use neverlie_iced_widgets::ellipsis_text::{ellipsis_text, EllipsisText};
+//! use neverliie_iced_widgets::ellipsis_text::{ellipsis_text, EllipsisText};
 //!
 //! enum Message {}
 //!

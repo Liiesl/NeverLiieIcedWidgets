@@ -17,7 +17,7 @@ The confirmation dialog system has three main types:
 ```rust
 use iced::widget::{button, text};
 use iced::Element;
-use neverlie_iced_widgets::confirmation_dialog::ConfirmationDialog;
+use neverliie_iced_widgets::confirmation_dialog::ConfirmationDialog;
 
 enum Message {
     Delete,
@@ -54,7 +54,7 @@ fn view(show_dialog: bool) -> Element<'_, Message> {
 ### Custom Button
 
 ```rust
-use neverlie_iced_widgets::confirmation_dialog::{ConfirmationDialog, DialogButton, ButtonStyle};
+use neverliie_iced_widgets::confirmation_dialog::{ConfirmationDialog, DialogButton, ButtonStyle};
 
 ConfirmationDialog::new(content, true, "Delete?", "This cannot be undone.")
     .button(
@@ -153,6 +153,7 @@ ConfirmationDialog::new(content, is_open, title, message)
     .on_dismiss(message)            // Set dismiss message
     .button(dialog_button)          // Add custom button
     .blocking()                     // Prevent outside dismiss
+    .no_pointer()                   // Don't claim the pointer cursor on hover
     .style(style_fn)                // Custom style function
     .class(class)                   // Theme class
 ```

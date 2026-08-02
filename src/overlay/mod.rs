@@ -16,8 +16,9 @@
 //! ```no_run
 //! use iced::widget::{button, container, text};
 //! use iced::{Element, Vector};
-//! use never_lie_iced_widgets::overlay::{Floating, OverlayManager, Position};
+//! use neverliie_iced_widgets::overlay::{Floating, OverlayManager, Position};
 //!
+//! #[derive(Clone)]
 //! enum Message {
 //!     ShowPopup,
 //! }

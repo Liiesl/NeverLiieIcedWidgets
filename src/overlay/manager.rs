@@ -23,7 +23,7 @@ struct State {
 /// # Example
 ///
 /// ```ignore
-/// use never_lie_iced_widgets::overlay::{Floating, OverlayManager, Position};
+/// use neverliie_iced_widgets::overlay::{Floating, OverlayManager, Position};
 ///
 /// OverlayManager::new(content)
 ///     .overlay(

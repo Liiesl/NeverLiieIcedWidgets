@@ -1,8 +1,11 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-/// The value of a [`TextInput`].
+/// The value of a [`GhostTrailTextInput`].
 ///
-/// [`TextInput`]: super::TextInput
+/// Stores text as a list of Unicode graphemes for correct handling of emoji
+/// and combining characters.
+///
+/// [`GhostTrailTextInput`]: super::GhostTrailTextInput
 // TODO: Reduce allocations, cache results (?)
 #[derive(Debug, Clone)]
 pub struct Value {
