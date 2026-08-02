@@ -13,8 +13,9 @@
 //!
 //! ```no_run
 //! use iced::Element;
-//! use neverlie_iced_widgets::slider_tooltip::{SliderTooltip, TooltipPosition};
+//! use neverliie_iced_widgets::slider_tooltip::{SliderTooltip, TooltipPosition};
 //!
+//! #[derive(Clone)]
 //! enum Message {
 //!     ValueChanged(f64),
 //! }

@@ -1,12 +1,70 @@
+//! Text input with an animated ghost trail cursor effect.
+//!
+//! This module provides [`GhostTrailTextInput`], a fully custom text input
+//! widget (not a wrapper around `iced::widget::text_input`) whose cursor
+//! smoothly slides between positions with a fading gradient trail instead of
+//! blinking in place.
+//!
+//! # Overview
+//!
+//! - [`GhostTrailTextInput`] — the text input widget
+//! - [`Value`] — Unicode-aware text storage with grapheme support
+//! - [`Cursor`] — cursor position and selection tracking
+//! - [`Status`] — widget state used by the style function
+//! - [`Style`] — visual styling: background, border, colors
+//!
+//! # Example
+//!
+//! ```no_run
+//! use iced::Element;
+//! use neverliie_iced_widgets::ghost_text_input::GhostTrailTextInput;
+//!
+//! #[derive(Clone)]
+//! enum Message {
+//!     InputChanged(String),
+//! }
+//!
+//! fn view() -> Element<'_, Message> {
+//!     GhostTrailTextInput::new("Type something...", "")
+//!         .on_input(Message::InputChanged)
+//!         .into()
+//! }
+//! ```
+//!
+//! # Features
+//!
+//! - **Animated cursor trail**: when the cursor moves, it smoothly slides from
+//!   the old position to the new one, leaving a fading gradient trail
+//! - **Blinking cursor**: standard 500ms blink interval when focused and idle
+//! - **Secure mode**: optionally masks input with dot characters for passwords
+//! - **Icon support**: display an optional icon on the left or right side
+//! - **Full keyboard shortcuts**: Ctrl/Cmd+C/X/V/A, Home/End, arrow keys with
+//!   Shift and Ctrl/Alt
+//! - **IME support**: handles preedit and commit events for international
+//!   keyboard input
+//! - **Unicode support**: full grapheme-aware text editing via
+//!   `unicode-segmentation`
+//!
+//! [`GhostTrailTextInput`]: struct.GhostTrailTextInput
+//! [`Value`]: struct.Value
+//! [`Cursor`]: struct.Cursor
+//! [`Status`]: enum.Status
+//! [`Style`]: struct.Style
+
 const CURSOR_DURATION_MS: u64 = 150;
 const CURSOR_SNAP_THRESHOLD: f32 = 0.5;
 const GRADIENT_TAIL_RATIO: f32 = 0.9;
 
+/// Easing curve used by the cursor ghost animation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EasingType {
+    /// Linear interpolation with no acceleration.
     Linear,
+    /// Eases in — starts slow and accelerates.
     EaseIn,
+    /// Eases out — starts fast and decelerates. The default.
     EaseOut,
+    /// Eases both in and out — slow start and slow end.
     EaseInOut,
 }
 
@@ -173,7 +231,12 @@ fn animated_cursor_state<Renderer: text::Renderer>(
     &mut combined_state::<Renderer>(tree).animated_cursor
 }
 
-/// A field that can be filled with text.
+/// A text input field with an animated "ghost trail" cursor.
+///
+/// Behaves like `iced::widget::text_input`, but when the cursor moves it
+/// slides from the old position to the new one, leaving a fading gradient
+/// trail. Supports secure (password) mode, icons, IME input, and full
+/// keyboard shortcuts.
 pub struct GhostTrailTextInput<
     'a,
     Message,
@@ -208,7 +271,7 @@ pub struct GhostTrailTextInput<
     colored_spans: Vec<(std::ops::Range<usize>, Color)>,
 }
 
-/// The default [`Padding`] of a [`TextInput`].
+/// The default [`Padding`] of a [`GhostTrailTextInput`].
 pub const DEFAULT_PADDING: Padding = Padding::new(5.0);
 
 impl<'a, Message, Theme, Renderer> GhostTrailTextInput<'a, Message, Theme, Renderer>
@@ -217,7 +280,7 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    /// Creates a new [`TextInput`] with the given placeholder and value.
+    /// Creates a new [`GhostTrailTextInput`] with the given placeholder and value.
     pub fn new(placeholder: &str, value: &str) -> Self {
         GhostTrailTextInput {
             id: None,
@@ -246,16 +309,24 @@ where
         }
     }
 
+    /// Sets the [`widget::Id`] of this input, enabling focus and text
+    /// operations via `iced::advanced::widget::operation`.
+    #[must_use]
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
         self
     }
 
+    /// Sets whether the input masks its value with dot characters
+    /// (password mode).
+    #[must_use]
     pub fn secure(mut self, is_secure: bool) -> Self {
         self.is_secure = is_secure;
         self
     }
 
+    /// Sets the message handler called whenever the value changes.
+    #[must_use]
     pub fn on_input(
         mut self,
         on_input: impl Fn(String) -> Message + 'a,
@@ -264,6 +335,8 @@ where
         self
     }
 
+    /// Sets the optional message handler called whenever the value changes.
+    #[must_use]
     pub fn on_input_maybe(
         mut self,
         on_input: Option<impl Fn(String) -> Message + 'a>,
@@ -272,16 +345,22 @@ where
         self
     }
 
+    /// Sets the message to publish when the Enter key is pressed.
+    #[must_use]
     pub fn on_submit(mut self, message: Message) -> Self {
         self.on_submit = Some(message);
         self
     }
 
+    /// Sets the optional message to publish when the Enter key is pressed.
+    #[must_use]
     pub fn on_submit_maybe(mut self, on_submit: Option<Message>) -> Self {
         self.on_submit = on_submit;
         self
     }
 
+    /// Sets the message handler called whenever content is pasted.
+    #[must_use]
     pub fn on_paste(
         mut self,
         on_paste: impl Fn(String) -> Message + 'a,
@@ -290,6 +369,8 @@ where
         self
     }
 
+    /// Sets the optional message handler called whenever content is pasted.
+    #[must_use]
     pub fn on_paste_maybe(
         mut self,
         on_paste: Option<impl Fn(String) -> Message + 'a>,
@@ -298,31 +379,43 @@ where
         self
     }
 
+    /// Sets the font used to render the input text.
+    #[must_use]
     pub fn font(mut self, font: Renderer::Font) -> Self {
         self.font = Some(font);
         self
     }
 
+    /// Displays an [`Icon`] on the left or right side of the input.
+    #[must_use]
     pub fn icon(mut self, icon: Icon<Renderer::Font>) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Sets the width of the input.
+    #[must_use]
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = width.into();
         self
     }
 
+    /// Sets the padding of the input.
+    #[must_use]
     pub fn padding<P: Into<Padding>>(mut self, padding: P) -> Self {
         self.padding = padding.into();
         self
     }
 
+    /// Sets the text size of the input.
+    #[must_use]
     pub fn size(mut self, size: impl Into<Pixels>) -> Self {
         self.size = Some(size.into());
         self
     }
 
+    /// Sets the line height of the input.
+    #[must_use]
     pub fn line_height(
         mut self,
         line_height: impl Into<text::LineHeight>,
@@ -331,6 +424,8 @@ where
         self
     }
 
+    /// Sets the horizontal alignment of the input text.
+    #[must_use]
     pub fn align_x(
         mut self,
         alignment: impl Into<alignment::Horizontal>,
@@ -354,36 +449,53 @@ where
         self
     }
 
+    /// Overrides the color of the cursor (and its ghost trail).
+    #[must_use]
     pub fn cursor_color(mut self, color: Color) -> Self {
         self.cursor_color = color;
         self
     }
 
+    /// Sets the width of the cursor in pixels.
+    #[must_use]
     pub fn cursor_width(mut self, width: f32) -> Self {
         self.cursor_width = width;
         self
     }
 
+    /// Overrides the color of the input text.
+    #[must_use]
     pub fn text_color(mut self, color: Color) -> Self {
         self.text_color = color;
         self
     }
 
+    /// Overrides the color of the placeholder text.
+    #[must_use]
     pub fn placeholder_color(mut self, color: Color) -> Self {
         self.placeholder_color = color;
         self
     }
 
+    /// Sets the duration of the cursor ghost animation.
+    #[must_use]
     pub fn ghost_duration(mut self, duration: Duration) -> Self {
         self.ghost_duration = duration;
         self
     }
 
+    /// Sets the easing curve used by the cursor ghost animation.
+    #[must_use]
     pub fn ghost_easing(mut self, easing: EasingType) -> Self {
         self.ghost_easing = easing;
         self
     }
 
+    /// Computes the layout of the input, laying out the value, placeholder,
+    /// and icon text.
+    ///
+    /// This is an internal helper shared by the widget's `layout` and
+    /// `draw` passes; use the widget itself in regular application code.
     pub fn layout(
         &mut self,
         tree: &mut Tree,
@@ -1629,21 +1741,37 @@ where
     }
 }
 
+/// An icon displayed inside the input, on the left or right side.
+///
+/// Create one and pass it to [`GhostTrailTextInput::icon`].
 #[derive(Debug, Clone)]
 pub struct Icon<Font> {
+    /// The font that contains the icon glyph.
     pub font: Font,
+    /// The icon glyph's code point.
     pub code_point: char,
+    /// The icon size in pixels. Defaults to the input's text size when `None`.
     pub size: Option<Pixels>,
+    /// The spacing between the icon and the text.
     pub spacing: f32,
+    /// Which side of the input the icon is rendered on.
     pub side: Side,
 }
 
+/// Which side of the input an [`Icon`] is rendered on.
 #[derive(Debug, Clone)]
 pub enum Side {
+    /// Left side of the input.
     Left,
+    /// Right side of the input.
     Right,
 }
 
+/// The internal state of a [`GhostTrailTextInput`].
+///
+/// Exposed to support focus and text operations, e.g. through
+/// `iced::advanced::widget::operation::focus` or
+/// `operation::text_input` (see the `operation` module).
 #[derive(Debug, Default, Clone)]
 pub struct State<P: text::Paragraph> {
     value: paragraph::Plain<P>,
@@ -1674,18 +1802,22 @@ enum Drag {
 }
 
 impl<P: text::Paragraph> State<P> {
+    /// Creates a new [`State`].
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns whether the input is currently focused.
     pub fn is_focused(&self) -> bool {
         self.is_focused.is_some()
     }
 
+    /// Returns the current [`Cursor`].
     pub fn cursor(&self) -> Cursor {
         self.cursor
     }
 
+    /// Focuses the input, moving the cursor to the end of the value.
     pub fn focus(&mut self) {
         let now = Instant::now();
 
@@ -1698,26 +1830,32 @@ impl<P: text::Paragraph> State<P> {
         self.move_cursor_to_end();
     }
 
+    /// Unfocuses the input.
     pub fn unfocus(&mut self) {
         self.is_focused = None;
     }
 
+    /// Moves the cursor to the start of the value.
     pub fn move_cursor_to_front(&mut self) {
         self.cursor.move_to(0);
     }
 
+    /// Moves the cursor to the end of the value.
     pub fn move_cursor_to_end(&mut self) {
         self.cursor.move_to(usize::MAX);
     }
 
+    /// Moves the cursor to the given grapheme position.
     pub fn move_cursor_to(&mut self, position: usize) {
         self.cursor.move_to(position);
     }
 
+    /// Selects the entire value.
     pub fn select_all(&mut self) {
         self.cursor.select_range(0, usize::MAX);
     }
 
+    /// Selects the given grapheme range.
     pub fn select_range(&mut self, start: usize, end: usize) {
         self.cursor.select_range(start, end);
     }
@@ -1860,34 +1998,56 @@ fn replace_paragraph<Renderer>(
     });
 }
 
+/// The status of a [`GhostTrailTextInput`], passed to the style function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
+    /// The input is not focused and not hovered.
     Active,
+    /// The mouse is over the input.
     Hovered,
+    /// The input is focused, optionally hovered at the same time.
     Focused {
+        /// Whether the mouse is also over the input.
         is_hovered: bool,
     },
+    /// The input is disabled.
     Disabled,
 }
 
+/// The visual style of a [`GhostTrailTextInput`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
+    /// The background of the input.
     pub background: Background,
+    /// The border of the input.
     pub border: Border,
+    /// The color of the optional icon.
     pub icon: Color,
+    /// The color of the placeholder text.
     pub placeholder: Color,
+    /// The color of the input text.
     pub value: Color,
+    /// The color of the text selection highlight.
     pub selection: Color,
 }
 
+/// The theme catalog of a [`GhostTrailTextInput`].
+///
+/// Implemented for [`Theme`] by default, pulling colors from the extended
+/// palette. Use [`GhostTrailTextInput::style`] for a custom style function
+/// or [`GhostTrailTextInput::class`] for a theme class.
 pub trait Catalog: Sized {
+    /// The style class of this theme.
     type Class<'a>;
 
+    /// Returns the default class of this theme.
     fn default<'a>() -> Self::Class<'a>;
 
+    /// Resolves a class into a concrete [`Style`] for the given [`Status`].
     fn style(&self, class: &Self::Class<'_>, status: Status) -> Style;
 }
 
+/// A styling function for a [`GhostTrailTextInput`].
 pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 
 impl Catalog for Theme {
@@ -1902,6 +2062,7 @@ impl Catalog for Theme {
     }
 }
 
+/// Default style derived from the iced theme palette.
 pub fn default(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 

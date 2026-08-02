@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-iced = { version = "0.14", features = ["default"] }
+iced = { path = "../../iced", features = ["default"] }

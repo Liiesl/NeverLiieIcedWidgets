@@ -17,7 +17,7 @@ The overlay system has three main types:
 ```rust
 use iced::widget::{button, container, text};
 use iced::{Element, Vector};
-use never_lie_iced_widgets::overlay::{Floating, OverlayManager, Position};
+use neverliie_iced_widgets::overlay::{Floating, OverlayManager, Position};
 
 enum Message {
     ShowMenu,
@@ -128,6 +128,24 @@ Position::FollowCursor
 Position::cursor(Vector::new(12.0, 12.0))
 ```
 
+### Floating-Relative Positioning
+
+Position relative to *another* floating element by index. The `index` refers
+to the position of the floating element in the order it was added to the
+[`OverlayManager`](overlay.md). Index `0` is the first floating element added.
+
+```rust
+Position::Floating {
+    index: 0,                               // relative to the first overlay
+    anchor: Anchor::TopRight,
+    offset: Vector::new(4.0, 0.0),          // 4px to the right of its edge
+}
+// or use the convenience constructor:
+Position::floating(0, Anchor::TopRight, Vector::new(4.0, 0.0))
+```
+
+This is useful for submenus that need to appear next to their parent menu item.
+
 ## Anchor
 
 The `Anchor` enum represents 9 compass positions on a rectangle:
@@ -156,22 +174,36 @@ OverlayManager::new(content)
         Floating::new(badge)
             .position(Position::TopRight),
     )
-    .on_dismiss(Message::Dismiss)
     .into()
 ```
 
-## Dismiss Behavior
+## Z-Index
 
-Call `.on_dismiss(message)` to emit a message when the user clicks outside all floating content:
+Floating elements are stacked in the order they are added, but you can control
+the stacking order explicitly with `.index()`. Higher indices render on top of
+lower indices. Defaults to `1.0`.
 
 ```rust
 OverlayManager::new(content)
-    .overlay(Floating::new(popup).position(Position::Bottom))
-    .on_dismiss(Message::Dismiss)
+    .overlay(
+        Floating::new(menu)
+            .position(Position::FollowCursor)
+            .index(1.0),
+    )
+    .overlay(
+        Floating::new(tooltip)
+            .position(Position::Top)
+            .index(2.0),  // tooltip renders on top of the menu
+    )
     .into()
 ```
 
-When the user clicks outside the floating content, `Message::Dismiss` is published.
+## Dismissal
+
+`OverlayManager` has no built-in dismiss message: it is a pure layout wrapper.
+Control dismissal from your application state — for example, by toggling a
+`bool` in your `Message::update` and only adding the overlay while it is
+`true` (see the [overlay-test example](../examples/overlay-test)).
 
 ## How It Works
 
@@ -187,16 +219,16 @@ When the user clicks outside the floating content, `Message::Dismiss` is publish
 
 ```rust
 OverlayManager::new(content)          // Create with base content
-    .overlay(floating)                 // Add a floating child
-    .on_dismiss(message)               // Set dismiss message
-    .into()                            // Convert to Element
+    .overlay(floating)                // Add a floating child
+    .into()                           // Convert to Element
 ```
 
 ### `Floating`
 
 ```rust
 Floating::new(content)                // Create floating element
-    .position(position)                // Set position strategy
+    .position(position)               // Set position strategy
+    .index(z)                         // Set z-index (default 1.0)
 ```
 
 ### `Position`
@@ -215,6 +247,9 @@ Position::ViewportBottomLeft, Position::ViewportBottom, Position::ViewportBottom
 // Cursor
 Position::FollowCursor
 
+// Floating-relative
+Position::Floating { index, anchor, offset }
+
 // Advanced
 Position::Parent { anchor, offset }
 Position::Viewport { anchor, offset }
@@ -224,6 +259,7 @@ Position::Absolute(point)
 // Constructors
 Position::absolute(x, y)
 Position::cursor(offset)
+Position::floating(index, anchor, offset)
 Position::top_left(offset)
 Position::top_right(offset)
 Position::bottom_left(offset)

@@ -16,7 +16,7 @@
 //! ```no_run
 //! use iced::widget::text;
 //! use iced::{Color, Element};
-//! use neverlie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
+//! use neverliie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
 //!
 //! enum Message {}
 //!
@@ -38,7 +38,7 @@
 //!
 //! ```no_run
 //! use iced::{Color, Element};
-//! use neverlie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
+//! use neverliie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
 //!
 //! enum Message {}
 //!
@@ -235,7 +235,7 @@ where
 ///
 /// ```no_run
 /// use iced::{Color, Element};
-/// use neverlie_iced_widgets::lazy_icon::placeholder;
+/// use neverliie_iced_widgets::lazy_icon::placeholder;
 ///
 /// enum Message {}
 ///

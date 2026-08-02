@@ -15,8 +15,9 @@
 //! ```no_run
 //! use iced::widget::{container, text};
 //! use iced::Element;
-//! use never_lie_iced_widgets::context_menu::{ContextMenu, Menu};
+//! use neverliie_iced_widgets::context_menu::{ContextMenu, Menu};
 //!
+//! #[derive(Clone)]
 //! enum Message {
 //!     Copy,
 //!     Paste,

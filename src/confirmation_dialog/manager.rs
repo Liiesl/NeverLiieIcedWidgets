@@ -33,6 +33,7 @@ struct State {
 /// use iced::Element;
 /// use neverliie_iced_widgets::confirmation_dialog::ConfirmationDialog;
 ///
+/// #[derive(Clone)]
 /// enum Message {
 ///     Delete,
 ///     Cancel,

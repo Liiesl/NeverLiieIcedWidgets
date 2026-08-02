@@ -18,7 +18,7 @@ The context menu system has three main types:
 ```rust
 use iced::widget::{container, text};
 use iced::Element;
-use never_lie_iced_widgets::context_menu::{ContextMenu, Menu};
+use neverliie_iced_widgets::context_menu::{ContextMenu, Menu};
 
 enum Message {
     Copy,
@@ -158,6 +158,7 @@ pub struct Style {
 ```rust
 ContextMenu::new(content, menu)     // Create with base content and menu
     .on_dismiss(message)            // Set dismiss message
+    .on_right_click(message)        // Emit message on right-click, before menu opens
     .style(style_fn)                // Custom style function
     .class(class)                   // Theme class
     .text_size(size)                // Custom text size for menu items

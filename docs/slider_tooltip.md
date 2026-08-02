@@ -15,7 +15,7 @@ The slider tooltip system has two main types:
 
 ```rust
 use iced::Element;
-use neverlie_iced_widgets::slider_tooltip::{SliderTooltip, TooltipPosition};
+use neverliie_iced_widgets::slider_tooltip::{SliderTooltip, TooltipPosition};
 
 enum Message {
     ValueChanged(f64),
