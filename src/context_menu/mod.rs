@@ -8,7 +8,7 @@
 //! - [`ContextMenu`] — wraps content and shows a menu on right-click
 //! - [`Menu`] — builder for menu items
 //! - [`MenuItem`] — individual menu entry (action or separator)
-//! - [`Item`] — a clickable action item with optional shortcut
+//! - [`Item`] — a clickable action item with optional icon and shortcut
 //!
 //! # Example
 //!
@@ -55,6 +55,21 @@
 //!     );
 //! ```
 //!
+//! # Icons
+//!
+//! Items can have an icon — any [`Element`], such as an
+//! [`image`](iced::widget::image) / SVG, a glyph ([`text`](iced::widget::text)),
+//! or a [`LazyIcon`](crate::lazy_icon::LazyIcon):
+//!
+//! ```ignore
+//! let menu = Menu::new()
+//!     .item("Copy", Message::Copy)
+//!     .icon(text("⧉").size(14))
+//!     .shortcut("Ctrl+C")
+//!     .item("Save", Message::Save)
+//!     .icon(image(image::Handle::from_path("icons/save.png")));
+//! ```
+//!
 //! [`ContextMenu`]: struct.ContextMenu
 //! [`Menu`]: struct.Menu
 //! [`MenuItem`]: enum.MenuItem
@@ -65,34 +80,36 @@ mod overlay;
 
 pub use manager::ContextMenu;
 
-use iced::{Background, Border, Color, Shadow};
+use iced::{Background, Border, Color, Element, Shadow};
 
 /// A single entry in a [`Menu`].
 ///
 /// Either an actionable item or a visual separator.
-pub enum MenuItem<'a, Message> {
+pub enum MenuItem<'a, Message, Theme, Renderer> {
     /// A clickable menu item.
-    Item(Item<'a, Message>),
+    Item(Item<'a, Message, Theme, Renderer>),
     /// A horizontal separator line.
     Separator,
 }
 
-/// A clickable menu item with a label, action, and optional shortcut.
+/// A clickable menu item with a label, action, optional icon and shortcut.
 ///
 /// Create with [`Menu::item`] or [`Menu::item_disabled`].
-pub struct Item<'a, Message> {
+pub struct Item<'a, Message, Theme, Renderer> {
     label: &'a str,
     action: Option<Message>,
+    icon: Option<Element<'a, Message, Theme, Renderer>>,
     shortcut: Option<&'a str>,
-    submenu: Option<Menu<'a, Message>>,
+    submenu: Option<Menu<'a, Message, Theme, Renderer>>,
 }
 
-impl<'a, Message> Item<'a, Message> {
+impl<'a, Message, Theme, Renderer> Item<'a, Message, Theme, Renderer> {
     /// Creates a new enabled item.
     pub fn new(label: &'a str, action: Message) -> Self {
         Self {
             label,
             action: Some(action),
+            icon: None,
             shortcut: None,
             submenu: None,
         }
@@ -103,9 +120,24 @@ impl<'a, Message> Item<'a, Message> {
         Self {
             label,
             action: None,
+            icon: None,
             shortcut: None,
             submenu: None,
         }
+    }
+
+    /// Sets the icon of this item.
+    ///
+    /// The icon can be any [`Element`] — an [`image`](crate::lazy_icon) /
+    /// [`LazyIcon`](crate::lazy_icon::LazyIcon), an SVG, a glyph
+    /// ([`text`](iced::widget::text)), or any other widget.
+    #[must_use]
+    pub fn icon(
+        mut self,
+        icon: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.icon = Some(icon.into());
+        self
     }
 
     /// Sets the keyboard shortcut text displayed on the right.
@@ -117,7 +149,7 @@ impl<'a, Message> Item<'a, Message> {
 
     /// Attaches a submenu to this item.
     #[must_use]
-    pub fn submenu(mut self, menu: Menu<'a, Message>) -> Self {
+    pub fn submenu(mut self, menu: Menu<'a, Message, Theme, Renderer>) -> Self {
         self.submenu = Some(menu);
         self
     }
@@ -149,11 +181,11 @@ impl<'a, Message> Item<'a, Message> {
 ///     .item_disabled("Undo", Message::Undo)
 ///     .submenu("More", Menu::new().item("A", Message::A));
 /// ```
-pub struct Menu<'a, Message> {
-    pub(crate) items: Vec<MenuItem<'a, Message>>,
+pub struct Menu<'a, Message, Theme, Renderer> {
+    pub(crate) items: Vec<MenuItem<'a, Message, Theme, Renderer>>,
 }
 
-impl<'a, Message> Menu<'a, Message> {
+impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
     /// Creates an empty menu.
     pub fn new() -> Self {
         Self { items: Vec::new() }
@@ -180,6 +212,24 @@ impl<'a, Message> Menu<'a, Message> {
         self
     }
 
+    /// Sets the icon of the last added item.
+    ///
+    /// The icon can be any [`Element`] — an [`image`](crate::lazy_icon) /
+    /// [`LazyIcon`](crate::lazy_icon::LazyIcon), an SVG, a glyph
+    /// ([`text`](iced::widget::text)), or any other widget.
+    ///
+    /// Does nothing if the last entry is a separator or the menu is empty.
+    #[must_use]
+    pub fn icon(
+        mut self,
+        icon: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        if let Some(MenuItem::Item(item)) = self.items.last_mut() {
+            item.icon = Some(icon.into());
+        }
+        self
+    }
+
     /// Sets the keyboard shortcut text on the last added item.
     ///
     /// Does nothing if the last entry is a separator or the menu is empty.
@@ -193,10 +243,11 @@ impl<'a, Message> Menu<'a, Message> {
 
     /// Adds a submenu item with the given label and child menu.
     #[must_use]
-    pub fn submenu(mut self, label: &'a str, sub: Menu<'a, Message>) -> Self {
+    pub fn submenu(mut self, label: &'a str, sub: Menu<'a, Message, Theme, Renderer>) -> Self {
         self.items.push(MenuItem::Item(Item {
             label,
             action: None,
+            icon: None,
             shortcut: None,
             submenu: Some(sub),
         }));
@@ -226,7 +277,7 @@ impl<'a, Message> Menu<'a, Message> {
     }
 }
 
-impl<'a, Message> Default for Menu<'a, Message> {
+impl<'a, Message, Theme, Renderer> Default for Menu<'a, Message, Theme, Renderer> {
     fn default() -> Self {
         Self::new()
     }
@@ -339,3 +390,7 @@ pub(crate) const ITEM_PADDING_X: f32 = 16.0;
 pub(crate) const ITEM_PADDING_Y: f32 = 6.0;
 pub(crate) const SEPARATOR_HEIGHT: f32 = 9.0;
 pub(crate) const SHORTCUT_SPACING: f32 = 24.0;
+/// Width reserved for item icons.
+pub(crate) const ICON_WIDTH: f32 = 16.0;
+/// Spacing between the icon and the item label.
+pub(crate) const ICON_SPACING: f32 = 6.0;

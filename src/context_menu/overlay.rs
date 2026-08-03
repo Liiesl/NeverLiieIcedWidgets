@@ -1,15 +1,15 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
 use iced::advanced::renderer;
-use iced::advanced::widget::Operation;
+use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::Shell;
 use iced::mouse;
 use iced::advanced::text::{self, Paragraph, Text};
 use iced::{Event, Pixels, Point, Rectangle, Size, Vector};
 
 use super::{
-    Catalog, Menu, MenuItem, SHORTCUT_SPACING, ITEM_PADDING_X, ITEM_PADDING_Y,
-    SEPARATOR_HEIGHT,
+    Catalog, Menu, MenuItem, ICON_SPACING, ICON_WIDTH, ITEM_PADDING_X,
+    ITEM_PADDING_Y, SEPARATOR_HEIGHT, SHORTCUT_SPACING,
 };
 
 /// Shared state for the menu overlay, updated during event processing.
@@ -24,6 +24,12 @@ pub(crate) struct MenuState {
     /// the result is reused until the contents change (detected by a cheap
     /// fingerprint comparison).
     measured: Option<MeasuredMenu>,
+    /// Widget trees for item icons, aligned with `menu.items`.
+    ///
+    /// Icons are arbitrary widgets and need persistent state trees to be laid
+    /// out and drawn inside the overlay. They are reconciled every frame with
+    /// [`Tree::diff`].
+    icon_trees: Vec<Option<Tree>>,
 }
 
 impl MenuState {
@@ -34,6 +40,7 @@ impl MenuState {
             submenu_state: None,
             dismissed: false,
             measured: None,
+            icon_trees: Vec::new(),
         }
     }
 }
@@ -54,13 +61,16 @@ struct MeasuredMenu {
     total_height: f32,
     /// Text size (bit pattern) the measurements were computed with.
     text_size: u32,
+    /// Whether any item had an icon when measured. Icon contents are not
+    /// compared — they never affect the measured width.
+    has_icons: bool,
 }
 
 impl MeasuredMenu {
     /// Returns `true` if these measurements still match the given menu.
-    fn matches<Message>(
+    fn matches<Message, Theme, Renderer>(
         &self,
-        menu: &Menu<'_, Message>,
+        menu: &Menu<'_, Message, Theme, Renderer>,
         text_size: f32,
     ) -> bool {
         if self.text_size != text_size.to_bits() {
@@ -68,6 +78,16 @@ impl MeasuredMenu {
         }
 
         if self.labels.len() != menu.items.len() {
+            return false;
+        }
+
+        let has_icons = menu.items.iter().any(|m| {
+            matches!(
+                m,
+                MenuItem::Item(item) if item.icon.is_some()
+            )
+        });
+        if self.has_icons != has_icons {
             return false;
         }
 
@@ -95,7 +115,7 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    menu: &'a Menu<'b, Message>,
+    menu: &'a mut Menu<'b, Message, Theme, Renderer>,
     state: &'a mut MenuState,
     position: Point,
     viewport: Rectangle,
@@ -113,7 +133,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        menu: &'a Menu<'b, Message>,
+        menu: &'a mut Menu<'b, Message, Theme, Renderer>,
         state: &'a mut MenuState,
         position: Point,
         viewport: Rectangle,
@@ -137,109 +157,11 @@ where
     }
 
     fn item_height(&self) -> f32 {
-        let size = Pixels(self.text_size);
-        let line_height = text::LineHeight::Absolute(Pixels(self.text_size * 1.4));
-        f32::from(line_height.to_absolute(size)) + ITEM_PADDING_Y
+        item_height(self.text_size)
     }
 
     fn separator_height(&self) -> f32 {
         SEPARATOR_HEIGHT
-    }
-
-    fn measure_item_width(&self, _renderer: &Renderer, label: &str, shortcut: Option<&str>) -> f32 {
-        let size = Pixels(self.text_size);
-        let line_height = text::LineHeight::Absolute(Pixels(self.text_size * 1.4));
-
-        let label_width = Renderer::Paragraph::with_text(Text {
-            content: label,
-            bounds: Size::new(f32::INFINITY, f32::INFINITY),
-            size,
-            line_height,
-            font: self.font,
-            align_x: text::Alignment::Left,
-            align_y: iced::alignment::Vertical::Top,
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
-        })
-        .min_width();
-
-        let shortcut_width = shortcut
-            .map(|s| {
-                Renderer::Paragraph::with_text(Text {
-                    content: s,
-                    bounds: Size::new(f32::INFINITY, f32::INFINITY),
-                    size: Pixels(self.text_size * 0.9),
-                    line_height: text::LineHeight::Absolute(Pixels(self.text_size * 1.2)),
-                    font: self.font,
-                    align_x: text::Alignment::Left,
-                    align_y: iced::alignment::Vertical::Top,
-                    shaping: text::Shaping::Basic,
-                    wrapping: text::Wrapping::None,
-                })
-                .min_width()
-            })
-            .unwrap_or(0.0);
-
-        label_width + shortcut_width + SHORTCUT_SPACING
-    }
-
-    /// Ensures the measurements cached in `state.measured` match the given
-    /// menu, re-measuring (and re-shaping) the text only when the menu
-    /// contents have changed.
-    fn ensure_measured(&mut self, renderer: &Renderer, menu: &Menu<'b, Message>) {
-        let needs_measure = self
-            .state
-            .measured
-            .as_ref()
-            .is_none_or(|m| !m.matches(menu, self.text_size));
-
-        if needs_measure {
-            self.state.measured = Some(self.measure_menu(renderer, menu));
-        }
-    }
-
-    fn measure_menu(
-        &self,
-        renderer: &Renderer,
-        menu: &Menu<'b, Message>,
-    ) -> MeasuredMenu {
-        let ih = self.item_height();
-        let sh = self.separator_height();
-
-        let mut labels = Vec::with_capacity(menu.items.len());
-        let mut max_width = 0.0f32;
-        let mut total_height = 0.0f32;
-        let mut has_submenus = false;
-
-        for item in &menu.items {
-            match item {
-                MenuItem::Item(item) => {
-                    let width =
-                        self.measure_item_width(renderer, item.label, item.shortcut);
-                    max_width = max_width.max(width);
-                    total_height += ih;
-                    has_submenus |= item.has_submenu();
-                    labels.push(Some((
-                        item.label.to_owned(),
-                        item.shortcut.map(str::to_owned),
-                    )));
-                }
-                MenuItem::Separator => {
-                    total_height += sh;
-                    labels.push(None);
-                }
-            }
-        }
-
-        // Add right padding for submenu arrows
-        let submenu_arrow_space = if has_submenus { 20.0 } else { 0.0 };
-
-        MeasuredMenu {
-            labels,
-            menu_width: max_width + submenu_arrow_space + ITEM_PADDING_X * 2.0,
-            total_height,
-            text_size: self.text_size.to_bits(),
-        }
     }
 
     fn item_at(&self, position: Point, bounds: Rectangle) -> Option<(usize, bool)> {
@@ -277,30 +199,205 @@ where
             .map(|(i, _)| i)
             .collect()
     }
+}
 
-    fn item_y_offset(&self, target_idx: usize) -> f32 {
-        let ih = self.item_height();
-        let sh = self.separator_height();
-        let mut y = 0.0f32;
+fn item_height(text_size: f32) -> f32 {
+    let size = Pixels(text_size);
+    let line_height = text::LineHeight::Absolute(Pixels(text_size * 1.4));
+    f32::from(line_height.to_absolute(size)) + ITEM_PADDING_Y
+}
 
-        for (i, item) in self.menu.items.iter().enumerate() {
-            if i == target_idx {
-                return y;
-            }
-            match item {
-                MenuItem::Item(_) => y += ih,
-                MenuItem::Separator => y += sh,
-            }
+fn item_y_offset<'b, Message, Theme, Renderer>(
+    menu: &Menu<'b, Message, Theme, Renderer>,
+    text_size: f32,
+    target_idx: usize,
+) -> f32 {
+    let ih = item_height(text_size);
+    let sh = SEPARATOR_HEIGHT;
+    let mut y = 0.0f32;
+
+    for (i, item) in menu.items.iter().enumerate() {
+        if i == target_idx {
+            return y;
         }
-        y
+        match item {
+            MenuItem::Item(_) => y += ih,
+            MenuItem::Separator => y += sh,
+        }
+    }
+    y
+}
+
+fn icon_box(text_size: f32) -> Size {
+    let ih = item_height(text_size);
+    Size::new(ICON_WIDTH, ih.min(text_size * 1.4))
+}
+
+fn measure_item_width<Renderer>(
+    _renderer: &Renderer,
+    label: &str,
+    shortcut: Option<&str>,
+    has_icons: bool,
+    text_size: f32,
+    font: Renderer::Font,
+) -> f32
+where
+    Renderer: text::Renderer,
+{
+    let size = Pixels(text_size);
+    let line_height = text::LineHeight::Absolute(Pixels(text_size * 1.4));
+
+    let label_width = Renderer::Paragraph::with_text(Text {
+        content: label,
+        bounds: Size::new(f32::INFINITY, f32::INFINITY),
+        size,
+        line_height,
+        font,
+        align_x: text::Alignment::Left,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    })
+    .min_width();
+
+    let shortcut_width = shortcut
+        .map(|s| {
+            Renderer::Paragraph::with_text(Text {
+                content: s,
+                bounds: Size::new(f32::INFINITY, f32::INFINITY),
+                size: Pixels(text_size * 0.9),
+                line_height: text::LineHeight::Absolute(Pixels(text_size * 1.2)),
+                font,
+                align_x: text::Alignment::Left,
+                align_y: iced::alignment::Vertical::Top,
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            })
+            .min_width()
+        })
+        .unwrap_or(0.0);
+
+    let icon_space = if has_icons {
+        ICON_WIDTH + ICON_SPACING
+    } else {
+        0.0
+    };
+
+    icon_space + label_width + shortcut_width + SHORTCUT_SPACING
+}
+
+/// Reconciles the icon [`Tree`]s in `state.icon_trees` with `menu.items`.
+///
+/// Runs every frame. Existing trees are diffed against the current icon
+/// widget (cheap tag comparison); missing trees are created.
+fn ensure_trees<'b, Message, Theme, Renderer>(
+    state: &mut MenuState,
+    menu: &Menu<'b, Message, Theme, Renderer>,
+) where
+    Renderer: renderer::Renderer,
+{
+    let count = menu.items.len();
+    if state.icon_trees.len() != count {
+        state.icon_trees.resize_with(count, || None);
     }
 
-    fn submenu(&self, parent_idx: usize) -> Option<&'a Menu<'b, Message>> {
-        if let Some(MenuItem::Item(item)) = self.menu.items.get(parent_idx) {
-            item.submenu.as_ref()
-        } else {
-            None
+    for (i, item) in menu.items.iter().enumerate() {
+        match item {
+            MenuItem::Item(item) => {
+                if let Some(icon) = &item.icon {
+                    let tree = &mut state.icon_trees[i];
+                    let widget = icon.as_widget();
+                    match tree {
+                        Some(tree) => tree.diff(widget),
+                        None => *tree = Some(Tree::new(widget)),
+                    }
+                } else {
+                    state.icon_trees[i] = None;
+                }
+            }
+            MenuItem::Separator => {
+                state.icon_trees[i] = None;
+            }
         }
+    }
+}
+
+/// Ensures the measurements cached in `state.measured` match the given
+/// menu, re-measuring (and re-shaping) the text only when the menu
+/// contents have changed.
+fn ensure_measured<'b, Message, Theme, Renderer>(
+    state: &mut MenuState,
+    renderer: &Renderer,
+    menu: &Menu<'b, Message, Theme, Renderer>,
+    text_size: f32,
+    font: Renderer::Font,
+) where
+    Renderer: text::Renderer,
+{
+    let needs_measure = state
+        .measured
+        .as_ref()
+        .is_none_or(|m| !m.matches(menu, text_size));
+
+    if needs_measure {
+        state.measured = Some(measure_menu(renderer, menu, text_size, font));
+    }
+}
+
+fn measure_menu<'b, Message, Theme, Renderer>(
+    renderer: &Renderer,
+    menu: &Menu<'b, Message, Theme, Renderer>,
+    text_size: f32,
+    font: Renderer::Font,
+) -> MeasuredMenu
+where
+    Renderer: text::Renderer,
+{
+    let ih = item_height(text_size);
+    let sh = SEPARATOR_HEIGHT;
+
+    let mut labels = Vec::with_capacity(menu.items.len());
+    let mut max_width = 0.0f32;
+    let mut total_height = 0.0f32;
+    let mut has_submenus = false;
+    let mut has_icons = false;
+
+    for item in &menu.items {
+        match item {
+            MenuItem::Item(item) => {
+                has_icons |= item.icon.is_some();
+                let width = measure_item_width(
+                    renderer,
+                    item.label,
+                    item.shortcut,
+                    has_icons,
+                    text_size,
+                    font,
+                );
+                max_width = max_width.max(width);
+                total_height += ih;
+                has_submenus |= item.has_submenu();
+                labels.push(Some((
+                    item.label.to_owned(),
+                    item.shortcut.map(str::to_owned),
+                )));
+            }
+            MenuItem::Separator => {
+                total_height += sh;
+                labels.push(None);
+            }
+        }
+    }
+
+    // Add right padding for submenu arrows
+    let submenu_arrow_space = if has_submenus { 20.0 } else { 0.0 };
+
+    MeasuredMenu {
+        labels,
+        menu_width: max_width + submenu_arrow_space + ITEM_PADDING_X * 2.0,
+        total_height,
+        text_size: text_size.to_bits(),
+        has_icons,
     }
 }
 
@@ -312,28 +409,40 @@ where
     Renderer: renderer::Renderer + text::Renderer,
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        self.ensure_measured(renderer, self.menu);
+        let MenuOverlay {
+            menu,
+            state,
+            position,
+            text_size,
+            font,
+            ..
+        } = self;
+        let text_size = *text_size;
+        let font = *font;
 
-        let measured = self.state.measured.as_ref().unwrap();
+        ensure_trees::<Message, Theme, Renderer>(state, menu);
+        ensure_measured(state, renderer, menu, text_size, font);
+
+        let measured = state.measured.as_ref().unwrap();
         let menu_size = Size::new(measured.menu_width, measured.total_height);
 
-        let mut position = self.position;
+        let mut menu_position = *position;
 
         let max_x = (bounds.width - menu_size.width).max(0.0);
         let max_y = (bounds.height - menu_size.height).max(0.0);
 
         // Move the spawn anchor to the opposite corner when the menu
         // would be clipped by the right or bottom edge of the viewport.
-        if position.x + menu_size.width > bounds.width {
-            position.x = if position.x - menu_size.width >= 0.0 {
-                position.x - menu_size.width
+        if menu_position.x + menu_size.width > bounds.width {
+            menu_position.x = if menu_position.x - menu_size.width >= 0.0 {
+                menu_position.x - menu_size.width
             } else {
                 max_x
             };
         }
-        if position.y + menu_size.height > bounds.height {
-            position.y = if position.y - menu_size.height >= 0.0 {
-                position.y - menu_size.height
+        if menu_position.y + menu_size.height > bounds.height {
+            menu_position.y = if menu_position.y - menu_size.height >= 0.0 {
+                menu_position.y - menu_size.height
             } else {
                 max_y
             };
@@ -341,11 +450,49 @@ where
 
         // Safety clamp (menu larger than viewport, or translation pushed
         // the position off the top/left edge).
-        position.x = position.x.clamp(0.0, max_x);
-        position.y = position.y.clamp(0.0, max_y);
+        menu_position.x = menu_position.x.clamp(0.0, max_x);
+        menu_position.y = menu_position.y.clamp(0.0, max_y);
 
-        layout::Node::new(menu_size)
-            .translate(Vector::new(position.x, position.y))
+        // Lay out the icon widgets into child nodes, positioned relative to
+        // the menu origin. `Layout::children` will offset them by the menu's
+        // device position, so they land on screen correctly.
+        let ih = item_height(text_size);
+        let sh = SEPARATOR_HEIGHT;
+        let icon_box = icon_box(text_size);
+        let mut children = Vec::new();
+        let mut y = 0.0f32;
+
+        for (i, item) in menu.items.iter_mut().enumerate() {
+            match item {
+                MenuItem::Item(item) => {
+                    if item.icon.is_some()
+                        && let Some(tree) = state.icon_trees[i].as_mut()
+                    {
+                        let icon = item.icon.as_mut().unwrap();
+                        let icon_limits =
+                            layout::Limits::new(Size::ZERO, icon_box);
+                        let mut icon_node =
+                            icon.as_widget_mut().layout(tree, renderer, &icon_limits);
+                        let icon_size = icon_node.size();
+
+                        // Center the icon in the reserved column and in the
+                        // item row.
+                        let x = ITEM_PADDING_X
+                            + (icon_box.width - icon_size.width) / 2.0;
+                        let cy = y + (ih - icon_size.height) / 2.0;
+                        icon_node.move_to_mut(Point::new(x, cy));
+                        children.push(icon_node);
+                    }
+                    y += ih;
+                }
+                MenuItem::Separator => {
+                    y += sh;
+                }
+            }
+        }
+
+        layout::Node::with_children(menu_size, children)
+            .translate(Vector::new(menu_position.x, menu_position.y))
     }
 
     fn draw(
@@ -361,6 +508,16 @@ where
         let ih = self.item_height();
         let sh = self.separator_height();
         let size = Pixels(self.text_size);
+        let has_icons = self
+            .state
+            .measured
+            .as_ref()
+            .is_some_and(|m| m.has_icons);
+        let label_x_offset = if has_icons {
+            ICON_WIDTH + ICON_SPACING
+        } else {
+            0.0
+        };
 
         // Draw background
         renderer.fill_quad(
@@ -376,6 +533,7 @@ where
         // Draw items
         let mut y = 0.0f32;
         let hovered = self.state.hovered_item;
+        let mut icon_children = layout.children();
 
         for (full_idx, item) in self.menu.items.iter().enumerate() {
             match item {
@@ -418,6 +576,30 @@ where
                         style.disabled_text_color
                     };
 
+                    // Draw icon widget
+                    if let Some(icon) = item.icon.as_ref()
+                        && let Some(icon_layout) = icon_children.next()
+                        && let Some(tree) =
+                            self.state.icon_trees[full_idx].as_ref()
+                    {
+                        let icon_style = if item.is_enabled() {
+                            *_style
+                        } else {
+                            renderer::Style {
+                                text_color: style.disabled_text_color,
+                            }
+                        };
+                        icon.as_widget().draw(
+                            tree,
+                            renderer,
+                            theme,
+                            &icon_style,
+                            icon_layout,
+                            _cursor,
+                            &self.viewport,
+                        );
+                    }
+
                     // Draw label
                     renderer.fill_text(
                         Text {
@@ -434,7 +616,7 @@ where
                             wrapping: text::Wrapping::None,
                         },
                         Point::new(
-                            item_bounds.x + ITEM_PADDING_X,
+                            item_bounds.x + ITEM_PADDING_X + label_x_offset,
                             item_bounds.center_y(),
                         ),
                         text_color,
@@ -709,76 +891,86 @@ where
         layout: Layout<'c>,
         renderer: &Renderer,
     ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
-        if let Some(parent_idx) = self.state.open_submenu_index
-            && let Some(sub_menu) = self.submenu(parent_idx)
-        {
-            let bounds = layout.bounds();
-            let y_off = self.item_y_offset(parent_idx);
+        // Split `self` into disjoint field borrows so the submenu, the
+        // submenu state and the class can be borrowed simultaneously.
+        let MenuOverlay {
+            menu,
+            state,
+            class,
+            viewport,
+            text_size,
+            font,
+            dismiss_message,
+            ..
+        } = self;
 
-            // Ensure submenu state exists
-            if self.state.submenu_state.is_none() {
-                self.state.submenu_state = Some(Box::new(MenuState::new()));
+        let menu = &mut **menu;
+        let state = &mut **state;
+        let class = &**class;
+
+        let parent_idx = state.open_submenu_index?;
+
+        let bounds = layout.bounds();
+        let y_off = item_y_offset(menu, *text_size, parent_idx);
+
+        // Ensure submenu state exists
+        if state.submenu_state.is_none() {
+            state.submenu_state = Some(Box::new(MenuState::new()));
+        }
+
+        let sub_menu = menu.items.get_mut(parent_idx).and_then(|entry| {
+            if let MenuItem::Item(item) = entry {
+                item.submenu.as_mut()
+            } else {
+                None
             }
+        })?;
 
-            // Reuse the submenu's cached measurements when its contents
-            // have not changed.
-            let needs_measure = self
-                .state
+        // Reuse the submenu's cached measurements when its contents
+        // have not changed.
+        let needs_measure = state
+            .submenu_state
+            .as_ref()
+            .and_then(|s| s.measured.as_ref())
+            .is_none_or(|m| !m.matches(&*sub_menu, *text_size));
+
+        let submenu_width = if needs_measure {
+            let measured = measure_menu(renderer, &*sub_menu, *text_size, *font);
+            let width = measured.menu_width;
+            state.submenu_state.as_mut().unwrap().measured = Some(measured);
+            width
+        } else {
+            state
                 .submenu_state
                 .as_ref()
-                .and_then(|s| s.measured.as_ref())
-                .is_none_or(|m| !m.matches(sub_menu, self.text_size));
+                .unwrap()
+                .measured
+                .as_ref()
+                .unwrap()
+                .menu_width
+        };
 
-            let submenu_width = if needs_measure {
-                let measured = self.measure_menu(renderer, sub_menu);
-                let width = measured.menu_width;
-                self.state.submenu_state.as_mut().unwrap().measured =
-                    Some(measured);
-                width
-            } else {
-                self.state
-                    .submenu_state
-                    .as_ref()
-                    .unwrap()
-                    .measured
-                    .as_ref()
-                    .unwrap()
-                    .menu_width
-            };
-
-            let submenu_x = if bounds.x + bounds.width + submenu_width > self.viewport.width {
+        let submenu_x =
+            if bounds.x + bounds.width + submenu_width > viewport.width {
                 bounds.x - submenu_width
             } else {
                 bounds.x + bounds.width
             };
-            let submenu_y = bounds.y + y_off;
+        let submenu_y = bounds.y + y_off;
 
-            let sub_state = self.state.submenu_state.as_mut().unwrap();
-            let dismiss = self.dismiss_message.clone();
-            let font = self.font;
-            let text_size = self.text_size;
-            let viewport = self.viewport;
+        let sub_state = state.submenu_state.as_mut().unwrap();
 
-            let sub_menu_ref: &'c Menu<'b, Message> = sub_menu;
-            let state_ref: &'c mut MenuState = sub_state;
-            let class_ref: &'c <Theme as Catalog>::Class<'b> = self.class;
-
-            return Some(overlay::Element::new(Box::new(
-                MenuOverlay {
-                    menu: sub_menu_ref,
-                    state: state_ref,
-                    position: Point::new(submenu_x, submenu_y),
-                    viewport,
-                    class: class_ref,
-                    text_size,
-                    dismiss_message: dismiss,
-                    font,
-                    is_root: false,
-                },
-            )));
-        }
-
-        None
+        Some(overlay::Element::new(Box::new(MenuOverlay {
+            menu: sub_menu,
+            state: sub_state,
+            position: Point::new(submenu_x, submenu_y),
+            viewport: *viewport,
+            class,
+            text_size: *text_size,
+            dismiss_message: dismiss_message.clone(),
+            font: *font,
+            is_root: false,
+        })))
     }
 
     fn index(&self) -> f32 {
