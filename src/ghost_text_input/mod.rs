@@ -22,11 +22,13 @@
 //! #[derive(Clone)]
 //! enum Message {
 //!     InputChanged(String),
+//!     FocusLost,
 //! }
 //!
 //! fn view() -> Element<'_, Message> {
 //!     GhostTrailTextInput::new("Type something...", "")
 //!         .on_input(Message::InputChanged)
+//!         .on_lose_focus(Message::FocusLost)
 //!         .into()
 //! }
 //! ```
@@ -38,6 +40,7 @@
 //! - **Blinking cursor**: standard 500ms blink interval when focused and idle
 //! - **Secure mode**: optionally masks input with dot characters for passwords
 //! - **Icon support**: display an optional icon on the left or right side
+//! - **Focus callbacks**: optional message when the input loses focus
 //! - **Full keyboard shortcuts**: Ctrl/Cmd+C/X/V/A, Home/End, arrow keys with
 //!   Shift and Ctrl/Alt
 //! - **IME support**: handles preedit and commit events for international
@@ -259,6 +262,7 @@ pub struct GhostTrailTextInput<
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_paste: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
+    on_lose_focus: Option<Message>,
     icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
@@ -296,6 +300,7 @@ where
             on_input: None,
             on_paste: None,
             on_submit: None,
+            on_lose_focus: None,
             icon: None,
             class: Theme::default(),
             last_status: None,
@@ -356,6 +361,20 @@ where
     #[must_use]
     pub fn on_submit_maybe(mut self, on_submit: Option<Message>) -> Self {
         self.on_submit = on_submit;
+        self
+    }
+
+    /// Sets the message to publish when the input loses focus.
+    #[must_use]
+    pub fn on_lose_focus(mut self, message: Message) -> Self {
+        self.on_lose_focus = Some(message);
+        self
+    }
+
+    /// Sets the optional message to publish when the input loses focus.
+    #[must_use]
+    pub fn on_lose_focus_maybe(mut self, on_lose_focus: Option<Message>) -> Self {
+        self.on_lose_focus = on_lose_focus;
         self
     }
 
@@ -982,6 +1001,8 @@ where
 
                 let click_position = cursor.position_over(layout.bounds());
 
+                let was_focused = state.is_focused.is_some();
+
                 state.is_focused = if click_position.is_some() {
                     let now = Instant::now();
 
@@ -993,6 +1014,12 @@ where
                 } else {
                     None
                 };
+
+                if was_focused && state.is_focused.is_none() {
+                    if let Some(on_lose_focus) = self.on_lose_focus.clone() {
+                        shell.publish(on_lose_focus);
+                    }
+                }
 
                 if let Some(cursor_position) = click_position {
                     let text_layout = layout.children().next().unwrap();
@@ -1493,12 +1520,18 @@ where
                             shell.capture_event();
                         }
                         keyboard::Key::Named(key::Named::Escape) => {
+                            let on_lose_focus = self.on_lose_focus.clone();
+
                             state.is_focused = None;
                             state.is_dragging = None;
                             state.is_pasting = None;
 
                             state.keyboard_modifiers =
                                 keyboard::Modifiers::default();
+
+                            if let Some(on_lose_focus) = on_lose_focus {
+                                shell.publish(on_lose_focus);
+                            }
 
                             shell.capture_event();
                         }

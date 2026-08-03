@@ -35,6 +35,7 @@ fn view() -> Element<'_, Message> {
 - **Blinking cursor**: Standard 500ms blink interval when focused and idle
 - **Secure mode**: Optionally masks input with dot characters for passwords
 - **Icon support**: Display an optional icon on the left or right side
+- **Focus callbacks**: Optional message when the input loses focus
 - **Full keyboard shortcuts**: Ctrl/Cmd+C/X/V/A, Home/End, arrow keys with Shift and Ctrl/Alt
 - **IME support**: Handles preedit and commit events for international keyboard input
 - **Unicode support**: Full grapheme-aware text editing via `unicode-segmentation`
@@ -48,6 +49,7 @@ GhostTrailTextInput::new("placeholder", "value")
     .on_input(Message::Changed)        // Text change callback
     .on_submit(Message::Submitted)     // Enter key callback
     .on_paste(Message::Pasted)         // Paste callback
+    .on_lose_focus(Message::Blurred)   // Focus loss callback
     .secure(true)                      // Password mode
     .width(300)                        // Widget width
     .padding(10)                       // Inner padding
@@ -89,6 +91,21 @@ GhostTrailTextInput::new("placeholder", "")
             selection: palette.primary.weak.color,
         }
     })
+```
+
+## Focus Loss Callback
+
+The `on_lose_focus` message is published when the input loses focus through user interaction:
+
+- Clicking or tapping **outside** the input while it is focused
+- Pressing **Escape** while it is focused
+
+It does **not** fire when the window itself loses focus (the input keeps its focus state and resumes blinking when the window regains focus), nor for programmatic focus changes via widget operations.
+
+```rust
+GhostTrailTextInput::new("placeholder", "")
+    .on_input(Message::Changed)
+    .on_lose_focus(Message::FocusLost)  // e.g. save/validate on blur
 ```
 
 ## Style Properties
@@ -139,6 +156,8 @@ GhostTrailTextInput::new(placeholder, value)  // Create new input
     .on_submit_maybe(message)   // Optional enter key handler
     .on_paste(callback)         // Paste handler
     .on_paste_maybe(callback)   // Optional paste handler
+    .on_lose_focus(message)     // Focus loss handler
+    .on_lose_focus_maybe(message) // Optional focus loss handler
 
 // Configuration
     .id(id)                     // Widget ID for operations
