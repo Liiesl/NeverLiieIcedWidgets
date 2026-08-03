@@ -1,7 +1,10 @@
-use iced::widget::{column, container, rule, scrollable, text};
+use iced::widget::{
+    column, container, image, rule, scrollable, text,
+};
 use iced::{Element, Length, Task, Theme};
 
 use neverliie_iced_widgets::context_menu::{ContextMenu, Menu};
+use neverliie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -193,8 +196,8 @@ impl App {
     /// Appends the 20 stress items to the given menu.
     fn stress_pad<'a>(
         &'a self,
-        menu: Menu<'a, Message>,
-    ) -> Menu<'a, Message> {
+        menu: Menu<'a, Message, iced::Theme, iced::Renderer>,
+    ) -> Menu<'a, Message, iced::Theme, iced::Renderer> {
         let mut menu = menu;
         for (i, label) in self.stress_labels.iter().enumerate() {
             menu = menu.item(label.as_str(), Message::Stress(i));
@@ -202,7 +205,16 @@ impl App {
         menu
     }
 
-    fn free_area_menu(&self) -> Menu<'_, Message> {
+    /// A small solid-color square image, used to demo image/rgba icons.
+    fn icon_square(rgb: [u8; 3]) -> iced::widget::image::Handle {
+        let pixels: Vec<u8> = rgb
+            .iter()
+            .flat_map(|c| [*c, *c, *c, 255])
+            .collect();
+        iced::widget::image::Handle::from_rgba(8, 8, pixels)
+    }
+
+    fn free_area_menu(&self) -> Menu<'_, Message, iced::Theme, iced::Renderer> {
         let encoding_menu = self.stress_pad(
             Menu::new()
                 .item("UTF-8", Message::EncodingUtf8)
@@ -223,17 +235,22 @@ impl App {
         let file_menu = self.stress_pad(
             Menu::new()
                 .item("Open", Message::Open)
+                .icon(image(Self::icon_square([90, 150, 255])).width(14).height(14))
                 .shortcut("Ctrl+O")
                 .separator()
                 .item("Save", Message::Save)
+                .icon(image(Self::icon_square([120, 200, 120])).width(14).height(14))
                 .shortcut("Ctrl+S")
                 .item("Save As", Message::SaveAs)
+                .icon(image(Self::icon_square([255, 180, 80])).width(14).height(14))
                 .shortcut("Ctrl+Shift+S")
                 .separator()
                 .submenu("Encoding", encoding_menu)
+                .icon(text("Ａ").size(13))
                 .submenu("Line Endings", line_endings_menu)
                 .separator()
                 .item("Exit", Message::Exit)
+                .icon(text("⏏").size(13))
                 .shortcut("Alt+F4"),
         );
 
@@ -258,27 +275,36 @@ impl App {
         let editor_menu = self.stress_pad(
             Menu::new()
                 .item("Undo", Message::Undo)
+                .icon(text("↶").size(13))
                 .shortcut("Ctrl+Z")
                 .item_disabled("Redo")
+                .icon(text("↷").size(13))
                 .shortcut("Ctrl+Y")
                 .separator()
                 .item("Cut", Message::Cut)
+                .icon(text("✂").size(13))
                 .shortcut("Ctrl+X")
                 .item("Copy", Message::Copy)
+                .icon(text("⧉").size(13))
                 .shortcut("Ctrl+C")
                 .item("Paste", Message::Paste)
+                .icon(text("📋").size(13))
                 .shortcut("Ctrl+V")
                 .item_disabled("Paste Special")
+                .icon(text("▣").size(13))
                 .shortcut("Ctrl+Shift+V")
                 .separator()
                 .item("Duplicate", Message::Duplicate)
+                .icon(text("⧉").size(13))
                 .shortcut("Ctrl+Shift+D")
                 .item("Delete", Message::Delete)
+                .icon(text("✕").size(13))
                 .shortcut("Del")
                 .separator()
                 .submenu("Indentation", indent_menu)
                 .separator()
                 .item("Select All", Message::SelectAll)
+                .icon(text("□").size(13))
                 .shortcut("Ctrl+A"),
         );
 
@@ -296,9 +322,15 @@ impl App {
     ) -> Element<'_, Message> {
         let menu = Menu::new()
             .item(rename, Message::ButtonAction(idx, rename))
+            .icon(text("✏").size(13))
             .item("Duplicate", Message::ButtonAction(idx, "Duplicate"))
+            .icon(text("⧉").size(13))
             .separator()
             .item(details, Message::ButtonAction(idx, details))
+            .icon(
+                LazyIcon::new(IconHandle::Image(Self::icon_square([200, 150, 90])))
+                    .size(15.0),
+            )
             .item(extra, Message::ButtonAction(idx, extra))
             .separator()
             .item_disabled("Move to Trash")

@@ -62,7 +62,7 @@ where
     Theme: Catalog,
 {
     content: Element<'a, Message, Theme, Renderer>,
-    menu: Menu<'a, Message>,
+    menu: Menu<'a, Message, Theme, Renderer>,
     on_dismiss: Option<Message>,
     on_right_click: Option<Message>,
     class: Theme::Class<'a>,
@@ -76,7 +76,7 @@ where
     /// Creates a new context menu wrapping the given content.
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
-        menu: Menu<'a, Message>,
+        menu: Menu<'a, Message, Theme, Renderer>,
     ) -> Self {
         Self {
             content: content.into(),
@@ -318,7 +318,7 @@ where
         let menu_position = state.cursor_position + translation;
 
         Some(overlay::Element::new(Box::new(MenuOverlay::new(
-            &self.menu,
+            &mut self.menu,
             &mut state.menu_state,
             menu_position,
             *viewport,

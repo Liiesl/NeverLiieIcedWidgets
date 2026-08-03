@@ -11,7 +11,7 @@ The context menu system has three main types:
 | `ContextMenu` | Wrapper widget that shows a menu on right-click |
 | `Menu` | Builder for menu items |
 | `MenuItem` | Individual menu entry (action or separator) |
-| `Item` | A clickable action item with optional shortcut |
+| `Item` | A clickable action item with optional icon and shortcut |
 
 ## Basic Usage
 
@@ -77,6 +77,47 @@ Menu::new()
     .item("Paste", Message::Paste)
     .shortcut("Ctrl+V")
 ```
+
+### Icons
+
+Set an icon on the last added item with `.icon(...)`, mirroring `.shortcut()`.
+The icon can be **any** [`Element`] — an [`image`], an SVG, a glyph
+([`text`] with an icon font), or even another widget like a
+[`LazyIcon`]:
+
+```rust
+use iced::widget::{image, text};
+use neverliie_iced_widgets::lazy_icon::{IconHandle, LazyIcon};
+
+Menu::new()
+    // Image / SVG / rgba icon
+    .item("Open", Message::Open)
+    .icon(image(image::Handle::from_path("icons/open.svg")).width(16).height(16))
+    .shortcut("Ctrl+O")
+    .separator()
+    // Glyph icon (icon font or symbol)
+    .item("Copy", Message::Copy)
+    .icon(text("⧉").size(14))
+    .shortcut("Ctrl+C")
+    .separator()
+    // Any widget, e.g. a LazyIcon
+    .item("Recover", Message::Recover)
+    .icon(
+        LazyIcon::new(IconHandle::Image(image::Handle::from_path("icons/recover.png")))
+            .size(16),
+    )
+    .item_disabled("Archive")     // icons also work on disabled items
+    .icon(text("🗀").size(14));
+```
+
+Icons are constrained to a small box (16px) and vertically centered in the row.
+If *any* item in a menu has an icon, all labels shift right by one fixed icon
+column so the icons line up (native-menu behavior).
+
+Notes:
+- Text/glyph icons dim automatically for disabled items; image/SVG icons keep
+  their own colors.
+- Icon widgets are display-only: they don't receive hover/focus/click events.
 
 ## Submenus
 
@@ -169,6 +210,7 @@ ContextMenu::new(content, menu)     // Create with base content and menu
 ```rust
 Menu::new()                         // Create empty menu
     .item(label, action)            // Add enabled item
+    .icon(element)                  // Set icon on last item (any widget)
     .item_disabled(label)           // Add disabled item
     .separator()                    // Add separator line
     .shortcut(text)                 // Set shortcut on last item
@@ -179,6 +221,7 @@ Menu::new()                         // Create empty menu
 
 ```rust
 Item::new(label, action)            // Create enabled item
+    .icon(element)                  // Set icon (any widget)
     .shortcut(text)                 // Set shortcut text
     .submenu(child_menu)            // Attach submenu
 ```
