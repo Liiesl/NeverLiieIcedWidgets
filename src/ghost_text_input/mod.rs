@@ -102,6 +102,7 @@ fn bezier_y(p1y: f32, p2y: f32, t: f32) -> f32 {
 }
 
 mod editor;
+pub mod sync;
 mod value;
 
 pub mod cursor;
@@ -110,6 +111,7 @@ pub use cursor::Cursor;
 pub use value::Value;
 
 use editor::Editor;
+use sync::EditOp;
 
 use iced::alignment;
 use iced::advanced::clipboard::{self, Clipboard};
@@ -145,6 +147,15 @@ struct AnimatedCursorState {
     is_animating: bool,
     last_cursor_index: usize,
     last_text: String,
+    /// Whether the host window currently has OS focus; the caret only
+    /// renders and blinks while it does.
+    window_focused: bool,
+    /// Blink phase anchor for unfocused synchronized inputs, refreshed on
+    /// window focus so every input blinks on the same cadence.
+    blink_updated_at: Instant,
+    /// Latest redraw instant, kept so `draw` can compute blink visibility
+    /// for inputs that are not the focused one.
+    blink_now: Instant,
 }
 
 impl Default for AnimatedCursorState {
@@ -158,6 +169,9 @@ impl Default for AnimatedCursorState {
             is_animating: false,
             last_cursor_index: 0,
             last_text: String::new(),
+            window_focused: true,
+            blink_updated_at: Instant::now(),
+            blink_now: Instant::now(),
         }
     }
 }
@@ -263,6 +277,11 @@ pub struct GhostTrailTextInput<
     on_paste: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
     on_lose_focus: Option<Message>,
+    on_edit: Option<Box<dyn Fn(sync::EditOp) -> Message + 'a>>,
+    /// External caret/selection override (anchor, caret) for op mode; the
+    /// canonical cursor is owned by the application, so rendering reads it
+    /// from here instead of the internal state.
+    cursor_override: Option<(usize, usize)>,
     icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
@@ -301,6 +320,8 @@ where
             on_paste: None,
             on_submit: None,
             on_lose_focus: None,
+            on_edit: None,
+            cursor_override: None,
             icon: None,
             class: Theme::default(),
             last_status: None,
@@ -396,6 +417,428 @@ where
     ) -> Self {
         self.on_paste = on_paste.map(|f| Box::new(f) as _);
         self
+    }
+
+    /// Switches the input into op mode: instead of editing its own value, it
+    /// publishes [`sync::EditOp`]s describing each keystroke so the
+    /// application can replay the same edit against multiple inputs (see the
+    /// [`sync`] module). The displayed value comes from the builder, and the
+    /// caret/selection from [`Self::cursor_override`].
+    #[must_use]
+    pub fn on_edit(
+        mut self,
+        on_edit: impl Fn(sync::EditOp) -> Message + 'a,
+    ) -> Self {
+        self.on_edit = Some(Box::new(on_edit));
+        self
+    }
+
+    /// Sets the caret/selection override used in op mode: `(anchor, caret)`
+    /// as grapheme indices, with `anchor == caret` for a plain caret.
+    #[must_use]
+    pub fn cursor_override(mut self, cursor: Option<(usize, usize)>) -> Self {
+        self.cursor_override = cursor;
+        self
+    }
+
+    /// The caret/selection used for rendering: the override in op mode,
+    /// clamped to the value length, otherwise the internal cursor state.
+    fn cursor_state_for(
+        &self,
+        state: &State<Renderer::Paragraph>,
+        value: &Value,
+    ) -> cursor::State {
+        match self.effective_cursor(value) {
+            Some((anchor, caret)) if anchor != caret => {
+                cursor::State::Selection {
+                    start: anchor,
+                    end: caret,
+                }
+            }
+            Some((position, _)) => cursor::State::Index(position),
+            None => state.cursor.state(value),
+        }
+    }
+
+    /// The clamped `(anchor, caret)` override, if op mode is active.
+    fn effective_cursor(&self, value: &Value) -> Option<(usize, usize)> {
+        self.cursor_override
+            .map(|(anchor, caret)| (anchor.min(value.len()), caret.min(value.len())))
+    }
+
+    /// The `(start, end)` span of the override selection, normalized, if the
+    /// override selects anything.
+    fn selection_override(&self) -> Option<(usize, usize)> {
+        let (anchor, caret) = self.effective_cursor(&self.value)?;
+        Some((anchor.min(caret), anchor.max(caret)))
+    }
+
+    /// Op-mode event handling: publishes [`sync::EditOp`]s describing each
+    /// keystroke instead of editing the input's own value, so the application
+    /// can mirror the same edit across multiple synchronized inputs. Escape is
+    /// deliberately not captured — it bubbles to the application-level cancel
+    /// handler.
+    fn update_ops(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        // Keep the internal cursor aligned with the canonical override so the
+        // click hit-testing helpers measure from the right position.
+        {
+            let state = state::<Renderer>(tree);
+            let value = self.value.clone();
+            if let Some((anchor, caret)) = self.effective_cursor(&value) {
+                state.cursor.select_range(anchor, caret);
+            }
+        }
+
+        match &event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let state = state::<Renderer>(tree);
+                let click_position = cursor.position_over(layout.bounds());
+
+                let was_focused = state.is_focused.is_some();
+
+                state.is_focused = if click_position.is_some() {
+                    let now = Instant::now();
+                    Some(Focus {
+                        updated_at: now,
+                        now,
+                        is_window_focused: true,
+                    })
+                } else {
+                    None
+                };
+
+                if was_focused && state.is_focused.is_none() {
+                    if let Some(on_lose_focus) = self.on_lose_focus.clone() {
+                        shell.publish(on_lose_focus);
+                    }
+                }
+
+                let Some(click_position) = click_position else {
+                    return;
+                };
+                let Some(on_edit) = &self.on_edit else {
+                    return;
+                };
+
+                let text_layout = layout.children().next().unwrap();
+                let text_bounds = text_layout.bounds();
+
+                let alignment_off = alignment_offset(
+                    text_bounds.width,
+                    state.value.raw().min_width(),
+                    self.alignment,
+                );
+
+                let target = click_position.x - text_bounds.x - alignment_off;
+
+                let value = self.value.clone();
+                let position = find_cursor_position(text_bounds, &value, state, target)
+                    .unwrap_or(0);
+
+                let click =
+                    mouse::Click::new(click_position, mouse::Button::Left, state.last_click);
+                let modifiers = state.keyboard_modifiers;
+                state.last_click = Some(click);
+
+                let op = match click.kind() {
+                    click::Kind::Single => EditOp::SetCaret {
+                        position,
+                        select: modifiers.shift(),
+                    },
+                    click::Kind::Double => EditOp::SelectWordAt { position },
+                    click::Kind::Triple => EditOp::SelectAll,
+                };
+
+                shell.publish((on_edit)(op));
+                shell.capture_event();
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                text,
+                modified_key,
+                physical_key,
+                ..
+            }) => {
+                let state = state::<Renderer>(tree);
+
+                if state.is_focused.is_some() {
+                    let modifiers = state.keyboard_modifiers;
+                    let on_edit = self
+                        .on_edit
+                        .as_ref()
+                        .expect("op mode requires on_edit");
+
+                    match key.to_latin(*physical_key) {
+                        Some('c') if modifiers.command() && !self.is_secure => {
+                            if let Some((start, end)) = self.selection_override() {
+                                clipboard.write(
+                                    clipboard::Kind::Standard,
+                                    self.value.select(start, end).to_string(),
+                                );
+                            }
+                            shell.capture_event();
+                            return;
+                        }
+                        Some('x') if modifiers.command() && !self.is_secure => {
+                            if let Some((start, end)) = self.selection_override() {
+                                clipboard.write(
+                                    clipboard::Kind::Standard,
+                                    self.value.select(start, end).to_string(),
+                                );
+                            }
+                            shell.publish(on_edit(EditOp::DeleteBackward { word: false }));
+                            shell.capture_event();
+                            return;
+                        }
+                        Some('v') if modifiers.command() && !modifiers.alt() => {
+                            let content: String = clipboard
+                                .read(clipboard::Kind::Standard)
+                                .unwrap_or_default()
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .collect();
+                            shell.publish(on_edit(EditOp::Paste { text: content }));
+                            shell.capture_event();
+                            return;
+                        }
+                        Some('a') if modifiers.command() => {
+                            shell.publish(on_edit(EditOp::SelectAll));
+                            shell.capture_event();
+                            return;
+                        }
+                        _ => {}
+                    }
+
+                    if let Some(text) = text {
+                        if let Some(c) = text.chars().next().filter(|c| !c.is_control()) {
+                            shell.publish(on_edit(EditOp::Insert { text: c.to_string() }));
+                            shell.capture_event();
+                            return;
+                        }
+                    }
+
+                    match modified_key.as_ref() {
+                        keyboard::Key::Named(key::Named::Enter) => {
+                            if let Some(on_submit) = self.on_submit.clone() {
+                                shell.publish(on_submit);
+                                shell.capture_event();
+                            }
+                        }
+                        keyboard::Key::Named(key::Named::Backspace) => {
+                            shell.publish(on_edit(EditOp::DeleteBackward {
+                                word: modifiers.jump(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::Delete) => {
+                            shell.publish(on_edit(EditOp::DeleteForward {
+                                word: modifiers.jump(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::Home) => {
+                            shell.publish(on_edit(EditOp::JumpToStart {
+                                select: modifiers.shift(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::End) => {
+                            shell.publish(on_edit(EditOp::JumpToEnd {
+                                select: modifiers.shift(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::ArrowLeft) => {
+                            shell.publish(on_edit(EditOp::MoveCaret {
+                                delta: -1,
+                                word: modifiers.jump(),
+                                select: modifiers.shift(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::ArrowRight) => {
+                            shell.publish(on_edit(EditOp::MoveCaret {
+                                delta: 1,
+                                word: modifiers.jump(),
+                                select: modifiers.shift(),
+                            }));
+                            shell.capture_event();
+                        }
+                        keyboard::Key::Named(key::Named::Escape) => {
+                            // Deliberately not captured: the application's
+                            // global Escape handler cancels the rename.
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Event::Keyboard(keyboard::Event::KeyReleased { .. }) => {}
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state::<Renderer>(tree).keyboard_modifiers = *modifiers;
+            }
+            Event::InputMethod(
+                im_event @ (input_method::Event::Opened | input_method::Event::Closed),
+            ) => {
+                let state = state::<Renderer>(tree);
+                state.preedit = matches!(im_event, input_method::Event::Opened)
+                    .then(input_method::Preedit::new);
+                shell.request_redraw();
+            }
+            Event::InputMethod(input_method::Event::Preedit(content, selection)) => {
+                let state = state::<Renderer>(tree);
+                if state.is_focused.is_some() {
+                    state.preedit = Some(input_method::Preedit {
+                        content: content.to_owned(),
+                        selection: selection.clone(),
+                        text_size: self.size,
+                    });
+                    shell.request_redraw();
+                }
+            }
+            Event::InputMethod(input_method::Event::Commit(text)) => {
+                let state = state::<Renderer>(tree);
+                if state.is_focused.is_some() {
+                    let Some(on_edit) = &self.on_edit else {
+                        return;
+                    };
+                    shell.publish(on_edit(EditOp::Insert {
+                        text: text.clone(),
+                    }));
+                    shell.capture_event();
+                }
+            }
+            Event::Window(window::Event::Unfocused) => {
+                let state = state::<Renderer>(tree);
+                if let Some(focus) = &mut state.is_focused {
+                    focus.is_window_focused = false;
+                }
+                animated_cursor_state::<Renderer>(tree).window_focused = false;
+            }
+            Event::Window(window::Event::Focused) => {
+                let state = state::<Renderer>(tree);
+                if let Some(focus) = &mut state.is_focused {
+                    focus.is_window_focused = true;
+                    focus.updated_at = Instant::now();
+                }
+                let anim = animated_cursor_state::<Renderer>(tree);
+                anim.window_focused = true;
+                anim.blink_updated_at = Instant::now();
+                anim.blink_now = anim.blink_updated_at;
+                shell.request_redraw();
+            }
+            Event::Window(window::Event::RedrawRequested(now)) => {
+                {
+                    let ti_state = state::<Renderer>(tree);
+                    let is_plain_caret = matches!(
+                        self.cursor_state_for(ti_state, &self.value),
+                        cursor::State::Index(_)
+                    );
+
+                    if let Some(focus) = &mut ti_state.is_focused
+                        && focus.is_window_focused
+                    {
+                        if is_plain_caret {
+                            focus.now = *now;
+
+                            let millis_until_redraw = CURSOR_BLINK_INTERVAL_MILLIS
+                                - (*now - focus.updated_at).as_millis()
+                                    % CURSOR_BLINK_INTERVAL_MILLIS;
+
+                            shell.request_redraw_at(
+                                *now + Duration::from_millis(millis_until_redraw as u64),
+                            );
+                        }
+
+                        shell.request_input_method(
+                            &self.input_method(ti_state, layout, &self.value),
+                        );
+                    } else if is_plain_caret
+                        && self.cursor_override.is_some()
+                        && animated_cursor_state::<Renderer>(tree).window_focused
+                    {
+                        // An unfocused synchronized input blinks too, on the
+                        // same cadence; iced coalesces the per-input redraw
+                        // requests into a single timer.
+                        let anim = animated_cursor_state::<Renderer>(tree);
+                        anim.blink_now = *now;
+
+                        let millis_until_redraw = CURSOR_BLINK_INTERVAL_MILLIS
+                            - (*now - anim.blink_updated_at).as_millis()
+                                % CURSOR_BLINK_INTERVAL_MILLIS;
+
+                        shell.request_redraw_at(
+                            *now + Duration::from_millis(millis_until_redraw as u64),
+                        );
+                    }
+                }
+
+                // Smooth cursor animation physics
+                {
+                    let text = self.value.to_string();
+                    let combined = combined_state::<Renderer>(tree);
+
+                    let cursor_idx = match self
+                        .cursor_state_for(&combined.text_input, &self.value)
+                    {
+                        cursor::State::Index(i) => i,
+                        cursor::State::Selection { start, end } => start.min(end),
+                    };
+
+                    let text_layout = layout.children().next().unwrap();
+                    let text_bounds = text_layout.bounds();
+
+                    let text_changed = text != combined.animated_cursor.last_text
+                        || cursor_idx != combined.animated_cursor.last_cursor_index;
+
+                    let paragraph =
+                        self.make_paragraph(renderer, &text, text_bounds.height);
+
+                    let target_x = paragraph
+                        .raw()
+                        .grapheme_position(0, cursor_idx)
+                        .map(|p| p.x)
+                        .unwrap_or(0.0);
+
+                    let target_width = if cursor_idx < text.len() {
+                        let next_x = paragraph
+                            .raw()
+                            .grapheme_position(0, cursor_idx + 1)
+                            .map(|p| p.x)
+                            .unwrap_or(target_x + self.cursor_width);
+                        (next_x - target_x).max(self.cursor_width)
+                    } else {
+                        self.cursor_width
+                    };
+
+                    combined.animated_cursor.update_physics(
+                        target_x,
+                        target_width,
+                        *now,
+                        self.ghost_duration,
+                        self.ghost_easing,
+                    );
+
+                    if text_changed {
+                        combined.animated_cursor.last_text = text;
+                        combined.animated_cursor.last_cursor_index = cursor_idx;
+                    }
+
+                    if combined.animated_cursor.is_animating {
+                        shell.request_redraw();
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Sets the font used to render the input text.
@@ -631,7 +1074,7 @@ where
 
         let text_bounds = layout.children().next().unwrap().bounds();
 
-        let caret_index = match state.cursor.state(value) {
+        let caret_index = match self.cursor_state_for(state, value) {
             cursor::State::Index(position) => position,
             cursor::State::Selection { start, end } => start.min(end),
         };
@@ -698,7 +1141,7 @@ where
         let state = &combined.text_input;
         let anim_cursor = &combined.animated_cursor;
         let value = value.unwrap_or(&self.value);
-        let is_disabled = self.on_input.is_none();
+        let is_disabled = self.on_input.is_none() && self.on_edit.is_none();
 
         let secure_value = self.is_secure.then(|| value.secure());
         let value = secure_value.as_ref().unwrap_or(value);
@@ -724,13 +1167,14 @@ where
 
         let text = value.to_string();
 
-        let (sel_quad, offset, is_selecting) = if let Some(focus) = state
+        let window_focus = state
             .is_focused
             .as_ref()
-            .filter(|focus| focus.is_window_focused)
-        {
-            match state.cursor.state(value) {
-                cursor::State::Index(position) => {
+            .filter(|focus| focus.is_window_focused);
+
+        let (sel_quad, offset, is_selecting) = match self.cursor_state_for(state, value) {
+            cursor::State::Index(position) => {
+                if let Some(focus) = window_focus {
                     let (_, offset) = measure_cursor_and_scroll_offset(
                         state.value.raw(),
                         text_bounds,
@@ -747,44 +1191,58 @@ where
                         offset,
                         false,
                     )
-                }
-                cursor::State::Selection { start, end } => {
-                    let left = start.min(end);
-                    let right = end.max(start);
-
-                    let (left_position, left_offset) =
-                        measure_cursor_and_scroll_offset(
-                            state.value.raw(),
-                            text_bounds,
-                            left,
-                        );
-
-                    let (right_position, right_offset) =
-                        measure_cursor_and_scroll_offset(
-                            state.value.raw(),
-                            text_bounds,
-                            right,
-                        );
-
-                    let width = right_position - left_position;
-
-                    (
-                        Some(renderer::Quad {
-                            bounds: Rectangle {
-                                x: left_position,
-                                y: 0.0,
-                                width,
-                                height: text_bounds.height,
-                            },
-                            ..renderer::Quad::default()
-                        }),
-                        if end == right { right_offset } else { left_offset },
-                        true,
-                    )
+                } else if self.cursor_override.is_some() && anim_cursor.window_focused {
+                    // An unfocused synchronized input still renders its caret
+                    // at the app-supplied position: scroll the text to it and
+                    // let the blink-aware caret drawing below do the rest.
+                    let (_, offset) = measure_cursor_and_scroll_offset(
+                        state.value.raw(),
+                        text_bounds,
+                        position,
+                    );
+                    (None, offset, false)
+                } else {
+                    (None, 0.0, false)
                 }
             }
-        } else {
-            (None, 0.0, false)
+            cursor::State::Selection { start, end }
+                if window_focus.is_some()
+                    || (self.cursor_override.is_some() && anim_cursor.window_focused) =>
+            {
+                let left = start.min(end);
+                let right = end.max(start);
+
+                let (left_position, left_offset) =
+                    measure_cursor_and_scroll_offset(
+                        state.value.raw(),
+                        text_bounds,
+                        left,
+                    );
+
+                let (right_position, right_offset) =
+                    measure_cursor_and_scroll_offset(
+                        state.value.raw(),
+                        text_bounds,
+                        right,
+                    );
+
+                let width = right_position - left_position;
+
+                (
+                    Some(renderer::Quad {
+                        bounds: Rectangle {
+                            x: left_position,
+                            y: 0.0,
+                            width,
+                            height: text_bounds.height,
+                        },
+                        ..renderer::Quad::default()
+                    }),
+                    if end == right { right_offset } else { left_offset },
+                    true,
+                )
+            }
+            cursor::State::Selection { .. } => (None, 0.0, false),
         };
 
         let draw = |renderer: &mut Renderer, viewport| {
@@ -824,12 +1282,29 @@ where
                         },
                     );
                 }
-            } else if state.is_focused.as_ref().is_some_and(|f| f.is_window_focused) {
+            } else if state.is_focused.as_ref().is_some_and(|f| f.is_window_focused)
+                || (self.cursor_override.is_some() && anim_cursor.window_focused)
+            {
                 // Smooth animated cursor logic
                 let diff = anim_cursor.target_x - anim_cursor.current_x;
                 let is_moving = diff.abs() > CURSOR_SNAP_THRESHOLD;
 
-                let is_cursor_visible = sel_quad.is_some() || is_moving || anim_cursor.is_animating;
+                // Every synchronized input blinks on the same cadence; the
+                // focused one drives the timing (see `update_ops`).
+                let is_cursor_visible = if state
+                    .is_focused
+                    .as_ref()
+                    .is_some_and(|f| f.is_window_focused)
+                {
+                    sel_quad.is_some() || is_moving || anim_cursor.is_animating
+                } else {
+                    ((anim_cursor.blink_now - anim_cursor.blink_updated_at)
+                        .as_millis()
+                        / CURSOR_BLINK_INTERVAL_MILLIS)
+                        .is_multiple_of(2)
+                        || is_moving
+                        || anim_cursor.is_animating
+                };
 
                 if is_cursor_visible {
                     let (quad_x, quad_width, gradient) = if is_moving {
@@ -993,10 +1468,13 @@ where
             );
         };
 
-        match &event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                let state = state::<Renderer>(tree);
+        if self.on_edit.is_some() {
+            self.update_ops(tree, event, layout, cursor, renderer, clipboard, shell);
+        } else {
+            match &event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                    let state = state::<Renderer>(tree);
                 let cursor_before = state.cursor;
 
                 let click_position = cursor.position_over(layout.bounds());
@@ -1700,10 +2178,11 @@ where
                 }
             }
             _ => {}
+            }
         }
 
         let state = state::<Renderer>(tree);
-        let is_disabled = self.on_input.is_none();
+        let is_disabled = self.on_input.is_none() && self.on_edit.is_none();
 
         let status = if is_disabled {
             Status::Disabled
@@ -1749,7 +2228,7 @@ where
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         if cursor.is_over(layout.bounds()) {
-            if self.on_input.is_none() {
+            if self.on_input.is_none() && self.on_edit.is_none() {
                 mouse::Interaction::Idle
             } else {
                 mouse::Interaction::Text

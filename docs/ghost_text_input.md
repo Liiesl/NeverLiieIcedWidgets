@@ -108,6 +108,47 @@ GhostTrailTextInput::new("placeholder", "")
     .on_lose_focus(Message::FocusLost)  // e.g. save/validate on blur
 ```
 
+## Op Mode (Synchronized Multi-Input Editing)
+
+"Op mode" turns the widget into a view over application-owned state: instead of editing its own value, it publishes `sync::EditOp` events describing each keystroke, and the application replays the same operation against every input in a synchronized group. This makes one keystroke edit N inputs simultaneously, each at its own caret position — e.g. batch-renaming multiple files at once.
+
+### Enabling Op Mode
+
+```rust
+GhostTrailTextInput::new("", state.text.clone())
+    .on_edit(move |op| Message::RenameOp { index, op })  // Publish edit operations
+    .cursor_override(Some((anchor, caret)))              // External caret/selection (graphemes)
+```
+
+| Builder | Purpose |
+|---------|---------|
+| `on_edit(callback)` | Switches the widget into op mode; publishes an `EditOp` per keystroke (typing, paste, backspace/delete, word jumps, selection, caret moves, IME commits) |
+| `cursor_override(cursor)` | Supplies the caret/selection `(anchor, caret)` in grapheme indices; rendering reads from here instead of internal state. `None` falls back to the internal cursor |
+
+In op mode the widget still handles mouse interaction, clipboard (Ctrl/Cmd+C/X/V), IME preedit/commit, and window-focus tracking. Unfocused op-mode inputs keep rendering their caret and blink on a shared cadence anchored to the focused input. Escape is deliberately **not** captured, so a global cancel handler can abort the operation. Focus changes still fire `on_lose_focus` as described above.
+
+### The `sync` Module
+
+```rust
+use neverliie_iced_widgets::ghost_text_input::sync::{self, EditOp, SyncState};
+```
+
+| Type | Purpose |
+|------|---------|
+| `EditOp` | A keystroke-level edit: `Insert`, `Paste`, `DeleteBackward`, `DeleteForward`, `MoveCaret`, `JumpToStart`, `JumpToEnd`, `SelectAll`, `SetCaret`, `SelectWordAt` |
+| `SyncState` | Per-item editable state: `text`, `caret`, `anchor` (selection anchor, `None` for a plain caret) |
+| `apply_op(&mut SyncState, &EditOp)` | Applies an op to one state, reusing the same `Editor`/`Cursor` machinery as single-input mode |
+| `initial_caret(name, stem_byte_len)` | Caret position at the end of a file stem (before the extension), byte-length aware for multibyte names |
+
+```rust
+// App-side: mirror one keystroke across every item in the rename session.
+for state in states {
+    sync::apply_op(state, &op);
+}
+```
+
+`SetCaret` / `SelectWordAt` (mouse interaction) are applied only to the input that published them, while typing/backspace/arrows apply to every input in the group. All indices are grapheme indices, matching the `Value` model.
+
 ## Style Properties
 
 ```rust
@@ -158,6 +199,8 @@ GhostTrailTextInput::new(placeholder, value)  // Create new input
     .on_paste_maybe(callback)   // Optional paste handler
     .on_lose_focus(message)     // Focus loss handler
     .on_lose_focus_maybe(message) // Optional focus loss handler
+    .on_edit(callback)          // Op mode: publish EditOp per keystroke
+    .cursor_override(cursor)    // Op mode: external caret/selection (graphemes)
 
 // Configuration
     .id(id)                     // Widget ID for operations
