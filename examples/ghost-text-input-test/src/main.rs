@@ -12,6 +12,7 @@ struct App {
     basic_value: String,
     secure_value: String,
     styled_value: String,
+    basic_focused: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,7 @@ enum Message {
     BasicChanged(String),
     SecureChanged(String),
     StyledChanged(String),
+    BasicLostFocus,
 }
 
 impl App {
@@ -27,12 +29,14 @@ impl App {
             Message::BasicChanged(v) => self.basic_value = v,
             Message::SecureChanged(v) => self.secure_value = v,
             Message::StyledChanged(v) => self.styled_value = v,
+            Message::BasicLostFocus => self.basic_focused = false,
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
         let basic_input = GhostTrailTextInput::new("Type something...", &self.basic_value)
             .on_input(Message::BasicChanged)
+            .on_lose_focus(Message::BasicLostFocus)
             .width(300);
 
         let secure_input = GhostTrailTextInput::new("Enter password...", &self.secure_value)
@@ -52,6 +56,11 @@ impl App {
             text("Basic input:"),
             basic_input,
             text(format!("Value: {}", self.basic_value)),
+            text(if self.basic_focused {
+                "Focus: active"
+            } else {
+                "Focus: lost (click input, press Esc, or click elsewhere)"
+            }),
             text(""),
             text("Secure (password) input:"),
             secure_input,
