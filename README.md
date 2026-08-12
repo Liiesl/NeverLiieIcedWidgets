@@ -17,6 +17,7 @@ This library provides additional widgets for iced that are not available in the 
 | [Slider Tooltip](docs/slider_tooltip.md) | Slider with floating value tooltip during hover and drag | Stable |
 | [Lazy Icon](docs/lazy_icon.md) | Lazy-loading icon with placeholder, plus skeleton `placeholder` widget | Stable |
 | [Ellipsis Text](docs/ellipsis_text.md) | Line-clamped text with ellipsis (`…`) truncation | Stable |
+| [Color Picker](docs/color_picker.md) | Dialog-style color picker with hue ring, RGB/HSV sliders, swatches and recent colors | Stable |
 
 ## Installation
 
@@ -82,6 +83,9 @@ cargo run -p lazy-icon-test
 
 # Ellipsis text truncation across lines and fonts
 cargo run -p ellipsis-text-test
+
+# Color picker dialog (hue ring, RGB/HSV tabs, swatches, recent colors)
+cargo run -p color-picker-test
 
 # Launcher menu for the demos above
 cargo run -p launcher
