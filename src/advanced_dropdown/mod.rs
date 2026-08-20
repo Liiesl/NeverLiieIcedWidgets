@@ -29,6 +29,7 @@
 //! #[derive(Debug, Clone)]
 //! enum Message {
 //!     FruitSelected(Fruit),
+//!     NewItemPressed,
 //! }
 //!
 //! fn view(state: &State) -> Element<'_, Message> {
@@ -47,6 +48,9 @@
 //!     advanced_dropdown(entries, state.favorite, Message::FruitSelected)
 //!         .placeholder("Select your favorite fruit...")
 //!         .searchable(true)
+//!         .on_new_item(Message::NewItemPressed)
+//!         .new_item_label("+ Add fruit")
+//!         .new_item_icon(text("➕").size(14))
 //!         .into()
 //! }
 //!
@@ -54,6 +58,9 @@
 //!     match message {
 //!         Message::FruitSelected(fruit) => {
 //!             state.favorite = Some(fruit);
+//!         }
+//!         Message::NewItemPressed => {
+//!             // Open your "create new item" dialog here.
 //!         }
 //!     }
 //! }
@@ -200,6 +207,7 @@ where
 /// #[derive(Debug, Clone)]
 /// enum Message {
 ///     FruitSelected(Fruit),
+///     NewItemPressed,
 /// }
 ///
 /// fn view(state: &State) -> Element<'_, Message> {
@@ -218,6 +226,9 @@ where
 ///     advanced_dropdown(entries, state.favorite, Message::FruitSelected)
 ///         .placeholder("Select your favorite fruit...")
 ///         .searchable(true)
+///         .on_new_item(Message::NewItemPressed)
+///         .new_item_label("+ Add fruit")
+///         .new_item_icon(text("➕").size(14))
 ///         .into()
 /// }
 ///
@@ -225,6 +236,9 @@ where
 ///     match message {
 ///         Message::FruitSelected(fruit) => {
 ///             state.favorite = Some(fruit);
+///         }
+///         Message::NewItemPressed => {
+///             // Open your "create new item" dialog here.
 ///         }
 ///     }
 /// }
@@ -247,6 +261,9 @@ pub struct AdvancedDropdown<
     on_select: Box<dyn Fn(T) -> Message + 'a>,
     on_open: Option<Message>,
     on_close: Option<Message>,
+    on_new_item: Option<Message>,
+    new_item_label: Option<String>,
+    new_item_icon: Option<Element<'a, Message, Theme, Renderer>>,
     options: L,
     placeholder: Option<String>,
     selected: Option<V>,
@@ -286,6 +303,9 @@ where
             on_select: Box::new(on_select),
             on_open: None,
             on_close: None,
+            on_new_item: None,
+            new_item_label: None,
+            new_item_icon: None,
             options,
             placeholder: None,
             selected,
@@ -381,6 +401,38 @@ where
     /// is closed.
     pub fn on_close(mut self, on_close: Message) -> Self {
         self.on_close = Some(on_close);
+        self
+    }
+
+    /// Enables a pinned "+ New Item" footer row at the bottom of the menu and
+    /// sets the message produced when it is pressed.
+    ///
+    /// The menu is closed before the message is produced, just like when an
+    /// option is selected.
+    pub fn on_new_item(mut self, on_new_item: Message) -> Self {
+        self.on_new_item = Some(on_new_item);
+        self
+    }
+
+    /// Sets the label of the new item footer row.
+    ///
+    /// Defaults to `"+ New Item"` when [`AdvancedDropdown::on_new_item`] is
+    /// set.
+    pub fn new_item_label(mut self, label: impl Into<String>) -> Self {
+        self.new_item_label = Some(label.into());
+        self
+    }
+
+    /// Sets the icon of the new item footer row.
+    ///
+    /// The icon can be any [`Element`] — an [`image`](iced::widget::image) /
+    /// SVG, a glyph ([`text`](iced::widget::text)), or any other widget.
+    #[must_use]
+    pub fn new_item_icon(
+        mut self,
+        icon: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.new_item_icon = Some(icon.into());
         self
     }
 
@@ -631,6 +683,7 @@ where
 
                     state.is_open = true;
                     state.menu.search.clear();
+                    state.menu.new_item_hovered = false;
                     state.hovered_option = self
                         .options
                         .borrow()
@@ -955,6 +1008,9 @@ where
                     (on_select)(option)
                 },
                 None,
+                self.on_new_item.clone(),
+                self.new_item_label.clone(),
+                self.new_item_icon.take(),
                 &self.menu_class,
             )
             .width(bounds.width)
