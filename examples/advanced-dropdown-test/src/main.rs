@@ -1,0 +1,246 @@
+use iced::widget::{
+    button, column, container, rule, row, scrollable, text,
+};
+use iced::{Element, Length, Task, Theme};
+
+use neverliie_iced_widgets::advanced_dropdown::{
+    advanced_dropdown, Item, MenuItem,
+};
+
+fn main() -> iced::Result {
+    iced::application(App::new, App::update, App::view)
+        .theme(App::theme)
+        .run()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fruit {
+    Apple,
+    Banana,
+    Cherry,
+    Grape,
+    Kiwi,
+    Mango,
+    Orange,
+    Peach,
+    Pear,
+    Plum,
+    Raspberry,
+    Strawberry,
+    Watermelon,
+}
+
+impl ToString for Fruit {
+    fn to_string(&self) -> String {
+        match self {
+            Fruit::Apple => "Apple",
+            Fruit::Banana => "Banana",
+            Fruit::Cherry => "Cherry",
+            Fruit::Grape => "Grape",
+            Fruit::Kiwi => "Kiwi",
+            Fruit::Mango => "Mango",
+            Fruit::Orange => "Orange",
+            Fruit::Peach => "Peach",
+            Fruit::Pear => "Pear",
+            Fruit::Plum => "Plum",
+            Fruit::Raspberry => "Raspberry",
+            Fruit::Strawberry => "Strawberry",
+            Fruit::Watermelon => "Watermelon",
+        }
+        .to_string()
+    }
+}
+
+impl Fruit {
+    fn icon(self) -> &'static str {
+        match self {
+            Fruit::Apple => "\u{1f34e}",
+            Fruit::Banana => "\u{1f34c}",
+            Fruit::Cherry => "\u{1f352}",
+            Fruit::Grape => "\u{1f347}",
+            Fruit::Kiwi => "\u{1f95d}",
+            Fruit::Mango => "\u{1f96d}",
+            Fruit::Orange => "\u{1f34a}",
+            Fruit::Peach => "\u{1f351}",
+            Fruit::Pear => "\u{1f350}",
+            Fruit::Plum => "\u{1f355}",
+            Fruit::Raspberry => "\u{1f353}",
+            Fruit::Strawberry => "\u{1f353}",
+            Fruit::Watermelon => "\u{1f349}",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    Selected(Fruit),
+    ToggleSearch(bool),
+    ClearLog,
+}
+
+struct App {
+    selected: Option<Fruit>,
+    search_enabled: bool,
+    log: Vec<String>,
+}
+
+impl App {
+    fn new() -> (Self, Task<Message>) {
+        (
+            Self {
+                selected: Some(Fruit::Apple),
+                search_enabled: true,
+                log: vec!["Pick a fruit from the dropdowns.".to_string()],
+            },
+            Task::none(),
+        )
+    }
+
+    fn theme(&self) -> Theme {
+        Theme::Dracula
+    }
+
+    fn update(&mut self, message: Message) {
+        match message {
+            Message::Selected(fruit) => {
+                self.selected = Some(fruit);
+                self.log.push(format!(
+                    "Selected: {} {}",
+                    fruit.icon(),
+                    fruit.to_string()
+                ));
+                if self.log.len() > 30 {
+                    self.log.remove(0);
+                }
+            }
+            Message::ToggleSearch(enabled) => {
+                self.search_enabled = enabled;
+            }
+            Message::ClearLog => {
+                self.log.clear();
+            }
+        }
+    }
+
+    fn entries() -> Vec<MenuItem<'static, Fruit, Message, Theme, iced::Renderer>> {
+        use iced::widget::text;
+
+        vec![
+            MenuItem::Label("Basic Fruits"),
+            MenuItem::Item(
+                Item::new(Fruit::Apple, "Apple").icon(text(Fruit::Apple.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Banana, "Banana").icon(text(Fruit::Banana.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Cherry, "Cherry").icon(text(Fruit::Cherry.icon()).size(14)),
+            ),
+            MenuItem::Separator,
+            MenuItem::Label("Citrus"),
+            MenuItem::Item(
+                Item::new(Fruit::Orange, "Orange").icon(text(Fruit::Orange.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Grape, "Grape").icon(text(Fruit::Grape.icon()).size(14)),
+            ),
+            MenuItem::Separator,
+            MenuItem::Label("Berries"),
+            MenuItem::Item(
+                Item::new(Fruit::Raspberry, "Raspberry")
+                    .icon(text(Fruit::Raspberry.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Strawberry, "Strawberry")
+                    .icon(text(Fruit::Strawberry.icon()).size(14)),
+            ),
+            MenuItem::Separator,
+            MenuItem::Label("Tropical"),
+            MenuItem::Item(
+                Item::new(Fruit::Mango, "Mango").icon(text(Fruit::Mango.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Kiwi, "Kiwi").icon(text(Fruit::Kiwi.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Peach, "Peach").icon(text(Fruit::Peach.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Plum, "Plum").icon(text(Fruit::Plum.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Pear, "Pear").icon(text(Fruit::Pear.icon()).size(14)),
+            ),
+            MenuItem::Item(
+                Item::new(Fruit::Watermelon, "Watermelon")
+                    .icon(text(Fruit::Watermelon.icon()).size(14)),
+            ),
+        ]
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let searchable = advanced_dropdown(
+            Self::entries(),
+            self.selected,
+            Message::Selected,
+        )
+        .searchable(self.search_enabled)
+        .placeholder("Pick a fruit...")
+        .width(220);
+
+        let plain = advanced_dropdown(Self::entries(), self.selected, Message::Selected)
+            .placeholder("No search here")
+            .width(220);
+
+        let selected_text = self
+            .selected
+            .map(|f| format!("{} {}", f.icon(), f.to_string()))
+            .unwrap_or_else(|| "Nothing selected".to_string());
+
+        let controls = column![
+            text("Advanced Dropdown").size(18),
+            rule::horizontal(1),
+            text("Searchable:").size(13),
+            iced::widget::checkbox(self.search_enabled)
+                .label("Enable search / filtering")
+                .on_toggle(Message::ToggleSearch),
+            text("").height(8),
+            text("Searchable dropdown:").size(13),
+            container(searchable).padding(4),
+            text("").height(8),
+            text("Plain dropdown (no search):").size(13),
+            container(plain).padding(4),
+            text("").height(8),
+            text(format!("Current selection: {selected_text}")).size(13),
+            button("Clear log").on_press(Message::ClearLog),
+        ]
+        .spacing(4)
+        .padding(20)
+        .width(300);
+
+        let log_entries = self.log.iter().enumerate().fold(
+            column![].spacing(2),
+            |col, (i, entry)| {
+                col.push(text(format!("{}: {}", i + 1, entry)).size(11))
+            },
+        );
+
+        let log_panel = container(
+            column![
+                text("Event Log").size(14),
+                rule::horizontal(1),
+                scrollable(log_entries),
+            ]
+            .spacing(4)
+            .padding(12),
+        )
+        .width(300)
+        .height(Length::Fill);
+
+        row![controls, log_panel]
+            .spacing(8)
+            .padding(8)
+            .height(Length::Fill)
+            .into()
+    }
+}
