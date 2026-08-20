@@ -47,6 +47,7 @@
 //! }
 //! ```
 
+pub mod advanced_dropdown;
 pub mod color_picker;
 pub mod confirmation_dialog;
 pub mod context_menu;
