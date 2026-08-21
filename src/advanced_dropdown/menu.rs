@@ -14,7 +14,7 @@ use iced::{
     Length, Padding, Pixels, Point, Rectangle, Shadow, Size, Theme, Vector,
 };
 
-use super::{MenuItem, ICON_SPACING, ICON_WIDTH, SEPARATOR_HEIGHT};
+use super::{Footer, MenuItem, ICON_SPACING, ICON_WIDTH, SEPARATOR_HEIGHT};
 
 /// The local message produced by the search box of a [`Menu`].
 #[derive(Debug, Clone)]
@@ -42,11 +42,12 @@ pub struct Menu<
     icon_trees: &'a mut Vec<Option<Tree>>,
     on_selected: Box<dyn FnMut(T) -> Message + 'a>,
     on_option_hovered: Option<&'a dyn Fn(T) -> Message>,
-    on_new_item: Option<Message>,
-    new_item_label: Option<String>,
-    new_item_icon: Option<Element<'b, Message, Theme, Renderer>>,
+    footers: Vec<Footer<'b, Message, Theme, Renderer>>,
     width: f32,
     padding: Padding,
+    search_padding: Padding,
+    search_border_radius: Option<border::Radius>,
+    menu_border_radius: Option<border::Radius>,
     text_size: Option<Pixels>,
     text_line_height: text::LineHeight,
     text_shaping: text::Shaping,
@@ -73,9 +74,7 @@ where
         icon_trees: &'a mut Vec<Option<Tree>>,
         on_selected: impl FnMut(T) -> Message + 'a,
         on_option_hovered: Option<&'a dyn Fn(T) -> Message>,
-        on_new_item: Option<Message>,
-        new_item_label: Option<String>,
-        new_item_icon: Option<Element<'b, Message, Theme, Renderer>>,
+        footers: Vec<Footer<'b, Message, Theme, Renderer>>,
         class: &'a <Theme as Catalog>::Class<'b>,
     ) -> Self {
         Menu {
@@ -85,11 +84,12 @@ where
             icon_trees,
             on_selected: Box::new(on_selected),
             on_option_hovered,
-            on_new_item,
-            new_item_label,
-            new_item_icon,
+            footers,
             width: 0.0,
             padding: Padding::ZERO,
+            search_padding: Padding::new(4.0),
+            search_border_radius: None,
+            menu_border_radius: None,
             text_size: None,
             text_line_height: text::LineHeight::default(),
             text_shaping: text::Shaping::default(),
@@ -144,6 +144,24 @@ where
         self
     }
 
+    /// Sets the outer [`Padding`] around the search field.
+    pub fn search_padding<P: Into<Padding>>(mut self, padding: P) -> Self {
+        self.search_padding = padding.into();
+        self
+    }
+
+    /// Sets the border radius of the search field.
+    pub fn search_border_radius(mut self, radius: impl Into<border::Radius>) -> Self {
+        self.search_border_radius = Some(radius.into());
+        self
+    }
+
+    /// Sets the border radius of the menu.
+    pub fn menu_border_radius(mut self, radius: impl Into<border::Radius>) -> Self {
+        self.menu_border_radius = Some(radius.into());
+        self
+    }
+
     /// Turns the [`Menu`] into an overlay [`Element`] at the given target
     /// position.
     ///
@@ -181,10 +199,10 @@ pub struct State {
     pub(crate) search_tree: Option<Tree>,
     /// Whether the search box should grab focus the next time it is built.
     pub(crate) search_focus: bool,
-    /// The widget tree of the new item footer icon.
-    pub(crate) new_item_icon_tree: Option<Tree>,
-    /// Whether the new item footer row is hovered.
-    pub(crate) new_item_hovered: bool,
+    /// Widget trees of footer icons.
+    pub(crate) footer_icon_trees: Vec<Option<Tree>>,
+    /// Whether each footer row is hovered.
+    pub(crate) footers_hovered: Vec<bool>,
 }
 
 impl State {
@@ -195,8 +213,8 @@ impl State {
             search: String::new(),
             search_tree: None,
             search_focus: false,
-            new_item_icon_tree: None,
-            new_item_hovered: false,
+            footer_icon_trees: Vec::new(),
+            footers_hovered: Vec::new(),
         }
     }
 }
@@ -219,8 +237,12 @@ where
     search: Option<&'a mut String>,
     search_input: Option<TextInput<'a, SearchMessage, Theme, Renderer>>,
     search_tree: Option<&'a mut Option<Tree>>,
-    new_item: Option<NewItem<'a, 'b, Message, Theme, Renderer>>,
+    footers: Vec<FooterRow<'a, 'b, Message, Theme, Renderer>>,
     padding: Padding,
+    search_padding: Padding,
+    #[allow(dead_code)]
+    search_border_radius: Option<border::Radius>,
+    menu_border_radius: Option<border::Radius>,
     text_size: Option<Pixels>,
     text_line_height: text::LineHeight,
     text_shaping: text::Shaping,
@@ -230,13 +252,13 @@ where
     class: &'a <Theme as Catalog>::Class<'b>,
 }
 
-/// The pinned "+ New Item" footer row of an [`Overlay`].
-struct NewItem<'a, 'b, Message, Theme, Renderer> {
+/// A pinned footer row of an [`Overlay`].
+struct FooterRow<'a, 'b, Message, Theme, Renderer> {
     label: String,
     icon: Option<Element<'b, Message, Theme, Renderer>>,
     icon_tree: &'a mut Option<Tree>,
     hovered: &'a mut bool,
-    on_press: Option<Message>,
+    on_press: Message,
 }
 
 impl<'a, 'b, Message, Theme, Renderer> Overlay<'a, 'b, Message, Theme, Renderer>
@@ -265,11 +287,12 @@ where
             icon_trees,
             on_selected,
             on_option_hovered,
-            on_new_item,
-            new_item_label,
-            mut new_item_icon,
+            footers,
             width,
             padding,
+            search_padding,
+            search_border_radius,
+            menu_border_radius,
             font,
             text_size,
             text_line_height,
@@ -289,6 +312,7 @@ where
         let should_focus_search = state.search_focus;
         state.search_focus = false;
 
+        let captured_search_radius = search_border_radius;
         let search_input = if searchable {
             let mut input = TextInput::new(
                 "Search...",
@@ -297,7 +321,7 @@ where
             .on_input(SearchMessage::TextChanged)
             .padding(Padding::new(4.0))
             .width(Length::Fill)
-            .style(|theme, _status| {
+            .style(move |theme, _status| {
                 let menu_style = Catalog::style(theme, class);
 
                 let selected = match menu_style.selected_background {
@@ -308,7 +332,7 @@ where
                 text_input::Style {
                     background: menu_style.background,
                     border: Border {
-                        radius: 4.0.into(),
+                        radius: captured_search_radius.unwrap_or(4.0.into()),
                         width: 0.0,
                         color: Color::TRANSPARENT,
                     },
@@ -360,31 +384,44 @@ where
 
         tree.diff(&list as &dyn Widget<_, _, _>);
 
-        let new_item = if on_new_item.is_some() {
-            let label = new_item_label.unwrap_or_else(|| "+ New Item".to_string());
-            let icon_tree = &mut state.new_item_icon_tree;
-
-            if let Some(icon) = new_item_icon.as_mut() {
-                let widget = icon.as_widget();
-
-                match icon_tree {
-                    Some(tree) => tree.diff(widget),
-                    None => *icon_tree = Some(Tree::new(widget)),
+        // Prepare footers
+        if state.footer_icon_trees.len() != footers.len() {
+            state.footer_icon_trees.resize_with(footers.len(), || None);
+        }
+        if state.footers_hovered.len() != footers.len() {
+            state.footers_hovered.resize(footers.len(), false);
+        }
+        // Reset hover state for removed footers is handled by resize; keep existing
+        let mut footers_rows = Vec::with_capacity(footers.len());
+        for (idx, mut footer) in footers.into_iter().enumerate() {
+            {
+                let icon_tree = &mut state.footer_icon_trees[idx];
+                if let Some(icon) = footer.icon.as_mut() {
+                    let widget = icon.as_widget();
+                    match icon_tree {
+                        Some(tree) => tree.diff(widget),
+                        None => *icon_tree = Some(Tree::new(widget)),
+                    }
+                } else {
+                    *icon_tree = None;
                 }
-            } else {
-                *icon_tree = None;
             }
-
-            Some(NewItem {
-                label,
-                icon: new_item_icon,
-                icon_tree: &mut state.new_item_icon_tree,
-                hovered: &mut state.new_item_hovered,
-                on_press: on_new_item,
-            })
-        } else {
-            None
-        };
+            // SAFETY: we just resized vectors, idx is valid; we need mutable refs to two vectors.
+            // Use raw pointer to avoid double mutable borrow of `state`.
+            let icon_tree_ptr: *mut Option<Tree> =
+                &mut state.footer_icon_trees[idx] as *mut _;
+            let hovered_ptr: *mut bool = &mut state.footers_hovered[idx] as *mut _;
+            // Re-borrow as mutable references with distinct lifetimes tied to `state`
+            let icon_tree_ref: &'a mut Option<Tree> = unsafe { &mut *icon_tree_ptr };
+            let hovered_ref: &'a mut bool = unsafe { &mut *hovered_ptr };
+            footers_rows.push(FooterRow {
+                label: footer.label,
+                icon: footer.icon,
+                icon_tree: icon_tree_ref,
+                hovered: hovered_ref,
+                on_press: footer.on_press,
+            });
+        }
 
         Self {
             position,
@@ -394,8 +431,11 @@ where
             search,
             search_input,
             search_tree,
-            new_item,
+            footers: footers_rows,
             padding,
+            search_padding,
+            search_border_radius,
+            menu_border_radius,
             text_size,
             text_line_height,
             text_shaping,
@@ -421,11 +461,15 @@ where
 
         let mut input_height = 0.0;
         let input_node = if let Some(input) = self.search_input.as_mut() {
+            let inner_width = (self.width - self.search_padding.x()).max(0.0);
             let limits = layout::Limits::new(
                 Size::ZERO,
-                Size::new(bounds.width - self.position.x, f32::INFINITY),
+                Size::new(
+                    (bounds.width - self.position.x - self.search_padding.x()).max(0.0),
+                    f32::INFINITY,
+                ),
             )
-            .width(self.width);
+            .width(inner_width);
 
             let mut node = input.layout(
                 self.search_tree
@@ -437,11 +481,27 @@ where
                 &limits,
                 None,
             );
-            input_height = node.size().height;
-            node.move_to_mut(Point::new(0.0, 0.0));
+            let node_h = node.size().height;
+            input_height = node_h + self.search_padding.y();
+            node.move_to_mut(Point::new(
+                self.search_padding.left,
+                self.search_padding.top,
+            ));
             Some(node)
         } else {
             None
+        };
+
+        // Include footer height in overflow calculation so footer stays inside window.
+        let footer_height_estimate = if self.footers.is_empty() {
+            0.0
+        } else {
+            let text_size = self
+                .text_size
+                .unwrap_or_else(|| renderer.default_size());
+            let item_height =
+                f32::from(self.text_line_height.to_absolute(text_size)) + self.padding.y();
+            SEPARATOR_HEIGHT + item_height * self.footers.len() as f32
         };
 
         let limits = layout::Limits::new(
@@ -449,9 +509,9 @@ where
             Size::new(
                 bounds.width - self.position.x,
                 if space_below > space_above {
-                    (space_below - input_height).max(0.0)
+                    (space_below - input_height - footer_height_estimate).max(0.0)
                 } else {
-                    (space_above - input_height).max(0.0)
+                    (space_above - input_height - footer_height_estimate).max(0.0)
                 },
             ),
         )
@@ -461,51 +521,55 @@ where
         let list_size = list_node.size();
         list_node.move_to_mut(Point::new(0.0, input_height));
 
-        let mut footer_height = 0.0;
-        let footer_node = if let Some(new_item) = self.new_item.as_mut() {
+        let (footer_height, footer_node) = if self.footers.is_empty() {
+            (0.0, None)
+        } else {
+            // Reuse estimate (same formula) to avoid drift; recompute for children.
             let text_size =
                 self.text_size.unwrap_or_else(|| renderer.default_size());
             let item_height = f32::from(
                 self.text_line_height.to_absolute(text_size),
             ) + self.padding.y();
-            let height = SEPARATOR_HEIGHT + item_height;
-            footer_height = height;
-
+            let height = footer_height_estimate;
             let mut children = Vec::new();
 
-            if let Some(icon) = new_item.icon.as_mut()
-                && let Some(icon_tree) = new_item.icon_tree.as_mut()
-            {
-                let icon_limits = layout::Limits::new(
-                    Size::ZERO,
-                    Size::new(ICON_WIDTH, item_height),
-                );
-                let mut icon_node = icon
-                    .as_widget_mut()
-                    .layout(icon_tree, renderer, &icon_limits);
-                let icon_size = icon_node.size();
+            for (idx, footer) in self.footers.iter_mut().enumerate() {
+                if let Some(icon) = footer.icon.as_mut()
+                    && let Some(icon_tree) = footer.icon_tree.as_mut()
+                {
+                    let icon_limits = layout::Limits::new(
+                        Size::ZERO,
+                        Size::new(ICON_WIDTH, item_height),
+                    );
+                    let mut icon_node = icon
+                        .as_widget_mut()
+                        .layout(icon_tree, renderer, &icon_limits);
+                    let icon_size = icon_node.size();
 
-                let x = self.padding.left + (ICON_WIDTH - icon_size.width) / 2.0;
-                let cy = SEPARATOR_HEIGHT + (item_height - icon_size.height) / 2.0;
-                icon_node.move_to_mut(Point::new(x, cy));
-                children.push(icon_node);
+                    let x = self.padding.left + (ICON_WIDTH - icon_size.width) / 2.0;
+                    let cy = SEPARATOR_HEIGHT
+                        + idx as f32 * item_height
+                        + (item_height - icon_size.height) / 2.0;
+                    icon_node.move_to_mut(Point::new(x, cy));
+                    children.push(icon_node);
+                }
             }
 
-            Some(
-                layout::Node::with_children(
-                    Size::new(list_size.width, height),
-                    children,
-                )
-                .move_to(Point::new(0.0, input_height + list_size.height)),
+            let node = layout::Node::with_children(
+                Size::new(list_size.width, height),
+                children,
             )
-        } else {
-            None
+            .move_to(Point::new(0.0, input_height + list_size.height));
+            (height, Some(node))
         };
 
         let size = Size::new(
-            list_size
-                .width
-                .max(input_node.as_ref().map(|n| n.size().width).unwrap_or(0.0)),
+            list_size.width.max(
+                input_node
+                    .as_ref()
+                    .map(|n| n.size().width + self.search_padding.x())
+                    .unwrap_or(0.0),
+            ),
             input_height + list_size.height + footer_height,
         );
 
@@ -603,27 +667,51 @@ where
             );
         }
 
-        if let Some(footer_layout) = children.next()
-            && let Some(new_item) = self.new_item.as_mut()
-        {
+        if let Some(footer_layout) = children.next() {
             let footer_bounds = footer_layout.bounds();
+            let text_size =
+                self.text_size.unwrap_or_else(|| renderer.default_size());
+            let item_height = f32::from(
+                self.text_line_height.to_absolute(text_size),
+            ) + self.padding.y();
 
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 | Event::Touch(touch::Event::FingerPressed { .. }) => {
                     if cursor.is_over(footer_bounds) {
-                        // Not captured: the click bubbles down to the
-                        // dropdown, which closes the open menu.
-                        if let Some(message) = &new_item.on_press {
-                            shell.publish(message.clone());
+                        let rel_y = cursor
+                            .position()
+                            .map(|p| p.y - footer_bounds.y)
+                            .unwrap_or(0.0);
+                        // single divider at top
+                        if rel_y >= SEPARATOR_HEIGHT {
+                            let idx = ((rel_y - SEPARATOR_HEIGHT) / item_height)
+                                .floor() as usize;
+                            if let Some(footer) = self.footers.get(idx) {
+                                shell.publish(footer.on_press.clone());
+                            }
                         }
                     }
                 }
                 Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                    let is_hovered = cursor.is_over(footer_bounds);
-
-                    if is_hovered != *new_item.hovered {
-                        *new_item.hovered = is_hovered;
+                    let mut needs_redraw = false;
+                    for (idx, footer) in self.footers.iter_mut().enumerate() {
+                        let row_y = footer_bounds.y
+                            + SEPARATOR_HEIGHT
+                            + idx as f32 * item_height;
+                        let row_bounds = Rectangle {
+                            x: footer_bounds.x,
+                            y: row_y,
+                            width: footer_bounds.width,
+                            height: item_height,
+                        };
+                        let is_hovered = cursor.is_over(row_bounds);
+                        if is_hovered != *footer.hovered {
+                            *footer.hovered = is_hovered;
+                            needs_redraw = true;
+                        }
+                    }
+                    if needs_redraw {
                         shell.request_redraw();
                     }
                 }
@@ -661,7 +749,7 @@ where
         let _ = children.next();
 
         if let Some(footer_layout) = children.next()
-            && self.new_item.is_some()
+            && !self.footers.is_empty()
             && cursor.is_over(footer_layout.bounds())
         {
             return mouse::Interaction::Pointer;
@@ -681,7 +769,10 @@ where
     ) {
         let bounds = layout.bounds();
 
-        let style = Catalog::style(theme, self.class);
+        let mut style = Catalog::style(theme, self.class);
+        if let Some(radius) = self.menu_border_radius {
+            style.border.radius = radius;
+        }
 
         renderer.fill_quad(
             renderer::Quad {
@@ -726,12 +817,14 @@ where
         }
 
         if let Some(footer_layout) = children.next()
-            && let Some(new_item) = self.new_item.as_ref()
+            && !self.footers.is_empty()
         {
             let footer_bounds = footer_layout.bounds();
-            let is_hovered = *new_item.hovered;
             let text_size =
                 self.text_size.unwrap_or_else(|| renderer.default_size());
+            let item_height = f32::from(
+                self.text_line_height.to_absolute(text_size),
+            ) + self.padding.y();
 
             let sep_y = footer_bounds.y + SEPARATOR_HEIGHT / 2.0;
 
@@ -753,74 +846,78 @@ where
                 style.separator_color,
             );
 
-            let row_bounds = Rectangle {
-                x: footer_bounds.x,
-                y: footer_bounds.y + SEPARATOR_HEIGHT,
-                width: footer_bounds.width,
-                height: footer_bounds.height - SEPARATOR_HEIGHT,
-            };
-
-            if is_hovered {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: Rectangle {
-                            x: row_bounds.x + style.border.width,
-                            width: row_bounds.width - style.border.width * 2.0,
-                            ..row_bounds
-                        },
-                        border: border::rounded(style.border.radius),
-                        ..renderer::Quad::default()
-                    },
-                    style.selected_background,
-                );
-            }
-
             let mut footer_children = footer_layout.children();
 
-            if let Some(icon) = new_item.icon.as_ref()
-                && let Some(icon_layout) = footer_children.next()
-                && let Some(icon_tree) = new_item.icon_tree.as_ref()
-            {
-                icon.as_widget().draw(
-                    icon_tree,
-                    renderer,
-                    theme,
-                    defaults,
-                    icon_layout,
-                    cursor,
-                    &bounds,
+            for (idx, footer) in self.footers.iter().enumerate() {
+                let is_hovered = *footer.hovered;
+                let row_bounds = Rectangle {
+                    x: footer_bounds.x,
+                    y: footer_bounds.y + SEPARATOR_HEIGHT + idx as f32 * item_height,
+                    width: footer_bounds.width,
+                    height: item_height,
+                };
+
+                if is_hovered {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: row_bounds.x + style.border.width,
+                                width: row_bounds.width - style.border.width * 2.0,
+                                ..row_bounds
+                            },
+                            border: border::rounded(style.border.radius),
+                            ..renderer::Quad::default()
+                        },
+                        style.selected_background,
+                    );
+                }
+
+                if let Some(icon) = footer.icon.as_ref()
+                    && let Some(icon_tree) = footer.icon_tree.as_ref()
+                {
+                    if let Some(icon_layout) = footer_children.next() {
+                        icon.as_widget().draw(
+                            icon_tree,
+                            renderer,
+                            theme,
+                            defaults,
+                            icon_layout,
+                            cursor,
+                            &bounds,
+                        );
+                    }
+                }
+
+                let label_x_offset = if footer.icon.is_some() {
+                    ICON_WIDTH + ICON_SPACING
+                } else {
+                    0.0
+                };
+
+                renderer.fill_text(
+                    Text {
+                        content: footer.label.clone(),
+                        bounds: Size::new(f32::INFINITY, row_bounds.height),
+                        size: text_size,
+                        line_height: self.text_line_height,
+                        font: self.font.unwrap_or_else(|| renderer.default_font()),
+                        align_x: text::Alignment::Default,
+                        align_y: alignment::Vertical::Center,
+                        shaping: self.text_shaping,
+                        wrapping: text::Wrapping::default(),
+                    },
+                    Point::new(
+                        row_bounds.x + self.padding.left + label_x_offset,
+                        row_bounds.center_y(),
+                    ),
+                    if is_hovered {
+                        style.selected_text_color
+                    } else {
+                        style.text_color
+                    },
+                    bounds,
                 );
             }
-
-            let label_x_offset = if new_item.icon.is_some() {
-                ICON_WIDTH + ICON_SPACING
-            } else {
-                0.0
-            };
-
-            renderer.fill_text(
-                Text {
-                    content: new_item.label.clone(),
-                    bounds: Size::new(f32::INFINITY, row_bounds.height),
-                    size: text_size,
-                    line_height: self.text_line_height,
-                    font: self.font.unwrap_or_else(|| renderer.default_font()),
-                    align_x: text::Alignment::Default,
-                    align_y: alignment::Vertical::Center,
-                    shaping: self.text_shaping,
-                    wrapping: text::Wrapping::default(),
-                },
-                Point::new(
-                    row_bounds.x + self.padding.left + label_x_offset,
-                    row_bounds.center_y(),
-                ),
-                if is_hovered {
-                    style.selected_text_color
-                } else {
-                    style.text_color
-                },
-                bounds,
-            );
         }
     }
 }
