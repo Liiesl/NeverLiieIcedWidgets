@@ -1,7 +1,7 @@
 use iced::widget::{button, column, container, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task, Theme};
 
-use neverliie_iced_widgets::advanced_dropdown::{advanced_dropdown, Item, MenuItem};
+use neverliie_iced_widgets::advanced_dropdown::{advanced_dropdown, Footer, Item, MenuItem};
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -76,6 +76,7 @@ enum Message {
     ToggleSearch(bool),
     ClearLog,
     NewItemPressed,
+    ManagePressed,
     NewItemNameChanged(String),
     NewItemSubmitted,
 }
@@ -131,6 +132,9 @@ impl App {
                 self.creating = true;
                 self.new_item_name.clear();
                 self.log("New item panel opened.");
+            }
+            Message::ManagePressed => {
+                self.log("Manage pressed (second footer).");
             }
             Message::NewItemNameChanged(name) => {
                 self.new_item_name = name;
@@ -219,9 +223,12 @@ impl App {
                 .searchable(self.search_enabled)
                 .placeholder("Pick a fruit...")
                 .width(220)
-                .on_new_item(Message::NewItemPressed)
-                .new_item_label("+ New Item")
-                .new_item_icon(text("➕").size(14));
+                .search_padding(4.0)
+                .border_radius(4.0)
+                .menu_border_radius(8.0)
+                .search_border_radius(4.0)
+                .footer(Footer::new("+ New Item", Message::NewItemPressed).icon(text("➕").size(14)))
+                .footer(Footer::new("Manage fruits", Message::ManagePressed).icon(text("⚙").size(14)));
 
         let plain = advanced_dropdown(self.entries(), self.selected.clone(), Message::Selected)
             .placeholder("No search here")

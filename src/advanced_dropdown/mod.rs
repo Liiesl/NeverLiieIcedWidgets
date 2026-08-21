@@ -48,9 +48,10 @@
 //!     advanced_dropdown(entries, state.favorite, Message::FruitSelected)
 //!         .placeholder("Select your favorite fruit...")
 //!         .searchable(true)
-//!         .on_new_item(Message::NewItemPressed)
-//!         .new_item_label("+ Add fruit")
-//!         .new_item_icon(text("➕").size(14))
+//!         .footer(
+//!             Footer::new("+ Add fruit", Message::NewItemPressed)
+//!                 .icon(text("➕").size(14))
+//!         )
 //!         .into()
 //! }
 //!
@@ -76,7 +77,7 @@ use iced::advanced::text::{self, Text};
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget};
 use iced::{
-    alignment, keyboard, touch, window, Background, Border, Color, Element,
+    alignment, border, keyboard, touch, window, Background, Border, Color, Element,
     Event, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vector,
 };
 use iced::widget::text_input;
@@ -171,6 +172,50 @@ where
     }
 }
 
+/// A clickable footer row pinned at the bottom of the [`AdvancedDropdown`] menu.
+///
+/// Footers are rendered below the scrollable list, separated by a single
+/// divider. Multiple footers are supported and each carries its own message.
+pub struct Footer<'a, Message, Theme, Renderer> {
+    pub(crate) label: String,
+    pub(crate) icon: Option<Element<'a, Message, Theme, Renderer>>,
+    pub(crate) on_press: Message,
+}
+
+impl<'a, Message, Theme, Renderer> Footer<'a, Message, Theme, Renderer> {
+    /// Creates a new footer with the given label and message.
+    pub fn new(label: impl Into<String>, on_press: Message) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+            on_press,
+        }
+    }
+
+    /// Sets the icon of this footer.
+    #[must_use]
+    pub fn icon(
+        mut self,
+        icon: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Returns the label.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Returns the message produced when pressed.
+    pub fn on_press(&self) -> &Message
+    where
+        Message: Clone,
+    {
+        &self.on_press
+    }
+}
+
 /// A widget for selecting a single value from a list of [`MenuItem`]s.
 ///
 /// Based on iced's native [`PickList`] and extended with:
@@ -226,9 +271,10 @@ where
 ///     advanced_dropdown(entries, state.favorite, Message::FruitSelected)
 ///         .placeholder("Select your favorite fruit...")
 ///         .searchable(true)
-///         .on_new_item(Message::NewItemPressed)
-///         .new_item_label("+ Add fruit")
-///         .new_item_icon(text("➕").size(14))
+///         .footer(
+///             Footer::new("+ Add fruit", Message::NewItemPressed)
+///                 .icon(text("➕").size(14)),
+///         )
 ///         .into()
 /// }
 ///
@@ -261,24 +307,27 @@ pub struct AdvancedDropdown<
     on_select: Box<dyn Fn(T) -> Message + 'a>,
     on_open: Option<Message>,
     on_close: Option<Message>,
-    on_new_item: Option<Message>,
-    new_item_label: Option<String>,
-    new_item_icon: Option<Element<'a, Message, Theme, Renderer>>,
+    footers: Vec<Footer<'a, Message, Theme, Renderer>>,
     options: L,
     placeholder: Option<String>,
     selected: Option<V>,
     searchable: bool,
     width: Length,
     padding: Padding,
+    search_padding: Padding,
     text_size: Option<Pixels>,
     text_line_height: text::LineHeight,
     text_shaping: text::Shaping,
     font: Option<Renderer::Font>,
     handle: Handle<Renderer::Font>,
+    border_radius: Option<border::Radius>,
+    menu_border_radius: Option<border::Radius>,
+    search_border_radius: Option<border::Radius>,
     class: <Theme as Catalog>::Class<'a>,
     menu_class: <Theme as menu::Catalog>::Class<'a>,
     last_status: Option<Status>,
     menu_height: Length,
+    menu_max_height: Option<f32>,
 }
 
 impl<'a, T, L, V, Message, Theme, Renderer>
@@ -303,24 +352,27 @@ where
             on_select: Box::new(on_select),
             on_open: None,
             on_close: None,
-            on_new_item: None,
-            new_item_label: None,
-            new_item_icon: None,
+            footers: Vec::new(),
             options,
             placeholder: None,
             selected,
             searchable: false,
             width: Length::Shrink,
             padding: iced::widget::button::DEFAULT_PADDING,
+            search_padding: Padding::new(4.0),
             text_size: None,
             text_line_height: text::LineHeight::default(),
             text_shaping: text::Shaping::default(),
             font: None,
             handle: Handle::default(),
+            border_radius: None,
+            menu_border_radius: None,
+            search_border_radius: None,
             class: <Theme as Catalog>::default(),
             menu_class: <Theme as Catalog>::default_menu(),
             last_status: None,
             menu_height: Length::Shrink,
+            menu_max_height: None,
         }
     }
 
@@ -348,6 +400,19 @@ where
     /// Sets the height of the [`Menu`].
     pub fn menu_height(mut self, menu_height: impl Into<Length>) -> Self {
         self.menu_height = menu_height.into();
+        self
+    }
+
+    /// Sets the max height of the [`Menu`]. When set, the menu will be
+    /// `Shrink` (fit content) but never exceed this height – the list becomes
+    /// scrollable instead of growing. This is the preferred way to limit the
+    /// dropdown size without forcing a fixed height. The cap applies to the
+    /// total overlay height (search input + scrollable list + footers).
+    ///
+    /// When `menu_max_height` is set, `menu_height` is ignored (the menu
+    /// always uses `Length::Shrink` and is capped via layout limits).
+    pub fn menu_max_height(mut self, max_height: impl Into<Pixels>) -> Self {
+        self.menu_max_height = Some(max_height.into().0);
         self
     }
 
@@ -404,35 +469,55 @@ where
         self
     }
 
-    /// Enables a pinned "+ New Item" footer row at the bottom of the menu and
-    /// sets the message produced when it is pressed.
+    /// Sets the outer [`Padding`] around the search field inside the menu.
     ///
-    /// The menu is closed before the message is produced, just like when an
-    /// option is selected.
-    pub fn on_new_item(mut self, on_new_item: Message) -> Self {
-        self.on_new_item = Some(on_new_item);
+    /// Uniform padding (same on all sides) is applied to inset the search
+    /// box from the menu border so it does not look out of place.
+    pub fn search_padding<P: Into<Padding>>(mut self, padding: P) -> Self {
+        self.search_padding = padding.into();
         self
     }
 
-    /// Sets the label of the new item footer row.
-    ///
-    /// Defaults to `"+ New Item"` when [`AdvancedDropdown::on_new_item`] is
-    /// set.
-    pub fn new_item_label(mut self, label: impl Into<String>) -> Self {
-        self.new_item_label = Some(label.into());
+    /// Sets the border radius of the closed field.
+    pub fn border_radius(mut self, radius: impl Into<border::Radius>) -> Self {
+        self.border_radius = Some(radius.into());
         self
     }
 
-    /// Sets the icon of the new item footer row.
-    ///
-    /// The icon can be any [`Element`] — an [`image`](iced::widget::image) /
-    /// SVG, a glyph ([`text`](iced::widget::text)), or any other widget.
-    #[must_use]
-    pub fn new_item_icon(
+    /// Sets the border radius of the dropdown menu.
+    pub fn menu_border_radius(
         mut self,
-        icon: impl Into<Element<'a, Message, Theme, Renderer>>,
+        radius: impl Into<border::Radius>,
     ) -> Self {
-        self.new_item_icon = Some(icon.into());
+        self.menu_border_radius = Some(radius.into());
+        self
+    }
+
+    /// Sets the border radius of the search field inside the menu.
+    pub fn search_border_radius(
+        mut self,
+        radius: impl Into<border::Radius>,
+    ) -> Self {
+        self.search_border_radius = Some(radius.into());
+        self
+    }
+
+    /// Adds a clickable footer row pinned at the bottom of the menu.
+    ///
+    /// Multiple footers are supported; they are rendered below the scrollable
+    /// list with a single divider above the block. Each footer closes the
+    /// menu before its message is produced.
+    pub fn footer(mut self, footer: Footer<'a, Message, Theme, Renderer>) -> Self {
+        self.footers.push(footer);
+        self
+    }
+
+    /// Adds multiple clickable footer rows.
+    pub fn footers(
+        mut self,
+        footers: impl IntoIterator<Item = Footer<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.footers.extend(footers);
         self
     }
 
@@ -683,7 +768,9 @@ where
 
                     state.is_open = true;
                     state.menu.search.clear();
-                    state.menu.new_item_hovered = false;
+                    for h in &mut state.menu.footers_hovered {
+                        *h = false;
+                    }
                     state.hovered_option = self
                         .options
                         .borrow()
@@ -828,11 +915,15 @@ where
 
         let bounds = layout.bounds();
 
-        let widget_style = Catalog::style(
+        let mut widget_style = Catalog::style(
             theme,
             &self.class,
             self.last_status.unwrap_or(Status::Active),
         );
+
+        if let Some(radius) = self.border_radius {
+            widget_style.border.radius = radius;
+        }
 
         renderer.fill_quad(
             renderer::Quad {
@@ -996,7 +1087,17 @@ where
             let bounds = layout.bounds();
 
             let on_select = &self.on_select;
-
+            // Move footers out but keep `self.footers` len for subsequent overlay calls
+            // within the same widget instance (avoid 0 len on next layout). We drain
+            // icons via `take()` so labels remain for next call.
+            let mut footers = Vec::with_capacity(self.footers.len());
+            for f in &mut self.footers {
+                footers.push(Footer {
+                    label: f.label.clone(),
+                    icon: f.icon.take(),
+                    on_press: f.on_press.clone(),
+                });
+            }
             let mut menu = Menu::new(
                 &mut state.menu,
                 self.options.borrow_mut(),
@@ -1008,27 +1109,43 @@ where
                     (on_select)(option)
                 },
                 None,
-                self.on_new_item.clone(),
-                self.new_item_label.clone(),
-                self.new_item_icon.take(),
+                footers,
                 &self.menu_class,
             )
             .width(bounds.width)
             .padding(self.padding)
+            .search_padding(self.search_padding)
             .font(font)
             .text_shaping(self.text_shaping)
             .searchable(self.searchable);
+
+            if let Some(radius) = self.menu_border_radius {
+                menu = menu.menu_border_radius(radius);
+            }
+            if let Some(radius) = self.search_border_radius {
+                menu = menu.search_border_radius(radius);
+            }
 
             if let Some(text_size) = self.text_size {
                 menu = menu.text_size(text_size);
             }
 
-            Some(menu.overlay(
-                layout.position() + translation,
-                *viewport,
-                bounds.height,
-                self.menu_height,
-            ))
+            Some(if let Some(max) = self.menu_max_height {
+                menu.overlay_with_max(
+                    layout.position() + translation,
+                    *viewport,
+                    bounds.height,
+                    self.menu_height,
+                    Some(max),
+                )
+            } else {
+                menu.overlay(
+                    layout.position() + translation,
+                    *viewport,
+                    bounds.height,
+                    self.menu_height,
+                )
+            })
         } else {
             None
         }
