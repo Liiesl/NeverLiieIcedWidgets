@@ -327,6 +327,7 @@ pub struct AdvancedDropdown<
     menu_class: <Theme as menu::Catalog>::Class<'a>,
     last_status: Option<Status>,
     menu_height: Length,
+    menu_max_height: Option<f32>,
 }
 
 impl<'a, T, L, V, Message, Theme, Renderer>
@@ -371,6 +372,7 @@ where
             menu_class: <Theme as Catalog>::default_menu(),
             last_status: None,
             menu_height: Length::Shrink,
+            menu_max_height: None,
         }
     }
 
@@ -398,6 +400,19 @@ where
     /// Sets the height of the [`Menu`].
     pub fn menu_height(mut self, menu_height: impl Into<Length>) -> Self {
         self.menu_height = menu_height.into();
+        self
+    }
+
+    /// Sets the max height of the [`Menu`]. When set, the menu will be
+    /// `Shrink` (fit content) but never exceed this height – the list becomes
+    /// scrollable instead of growing. This is the preferred way to limit the
+    /// dropdown size without forcing a fixed height. The cap applies to the
+    /// total overlay height (search input + scrollable list + footers).
+    ///
+    /// When `menu_max_height` is set, `menu_height` is ignored (the menu
+    /// always uses `Length::Shrink` and is capped via layout limits).
+    pub fn menu_max_height(mut self, max_height: impl Into<Pixels>) -> Self {
+        self.menu_max_height = Some(max_height.into().0);
         self
     }
 
@@ -1115,12 +1130,22 @@ where
                 menu = menu.text_size(text_size);
             }
 
-            Some(menu.overlay(
-                layout.position() + translation,
-                *viewport,
-                bounds.height,
-                self.menu_height,
-            ))
+            Some(if let Some(max) = self.menu_max_height {
+                menu.overlay_with_max(
+                    layout.position() + translation,
+                    *viewport,
+                    bounds.height,
+                    self.menu_height,
+                    Some(max),
+                )
+            } else {
+                menu.overlay(
+                    layout.position() + translation,
+                    *viewport,
+                    bounds.height,
+                    self.menu_height,
+                )
+            })
         } else {
             None
         }

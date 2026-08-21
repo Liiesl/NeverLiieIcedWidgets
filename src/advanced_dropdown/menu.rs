@@ -185,6 +185,29 @@ where
             self,
             target_height,
             menu_height,
+            None,
+        )))
+    }
+
+    pub fn overlay_with_max(
+        self,
+        position: Point,
+        viewport: Rectangle,
+        target_height: f32,
+        menu_height: Length,
+        menu_max_height: Option<f32>,
+    ) -> overlay::Element<'a, Message, Theme, Renderer>
+    where
+        <Theme as text_input::Catalog>::Class<'a>:
+            From<text_input::StyleFn<'a, Theme>>,
+    {
+        overlay::Element::new(Box::new(Overlay::new(
+            position,
+            viewport,
+            self,
+            target_height,
+            menu_height,
+            menu_max_height,
         )))
     }
 }
@@ -250,6 +273,7 @@ where
     width: f32,
     target_height: f32,
     class: &'a <Theme as Catalog>::Class<'b>,
+    menu_max_height: Option<f32>,
 }
 
 /// A pinned footer row of an [`Overlay`].
@@ -274,6 +298,7 @@ where
         menu: Menu<'a, 'b, T, Message, Theme, Renderer>,
         target_height: f32,
         menu_height: Length,
+        menu_max_height: Option<f32>,
     ) -> Self
     where
         T: Clone + ToString,
@@ -366,6 +391,22 @@ where
             None
         };
 
+        // When a max height is set, the list should shrink to content but
+        // never exceed the max – Scrollable height = Shrink and the max is
+        // enforced via layout Limits (see `Overlay::layout`). The cap applies
+        // to the total overlay height (input + list + footers).
+        // If both `menu_height` (non-Shrink) and `menu_max_height` are set,
+        // `menu_max_height` takes precedence (debug warning).
+        debug_assert!(
+            menu_max_height.is_none()
+                || matches!(menu_height, Length::Shrink),
+            "menu_max_height is set, menu_height will be ignored (using Shrink)"
+        );
+        let effective_height = if menu_max_height.is_some() {
+            Length::Shrink
+        } else {
+            menu_height
+        };
         let list = Scrollable::new(List {
             options,
             hovered_option,
@@ -380,7 +421,7 @@ where
             class,
             search: search.as_ref().map(|s| s.as_str()).unwrap_or("").to_owned(),
         })
-        .height(menu_height);
+        .height(effective_height);
 
         tree.diff(&list as &dyn Widget<_, _, _>);
 
@@ -443,6 +484,7 @@ where
             width,
             target_height,
             class,
+            menu_max_height,
         }
     }
 }
@@ -504,16 +546,20 @@ where
             SEPARATOR_HEIGHT + item_height * self.footers.len() as f32
         };
 
+        let viewport_available = if space_below > space_above {
+            (space_below - input_height - footer_height_estimate).max(0.0)
+        } else {
+            (space_above - input_height - footer_height_estimate).max(0.0)
+        };
+        let max_allowed = match self.menu_max_height {
+            Some(max) => (max - input_height - footer_height_estimate)
+                .max(0.0)
+                .min(viewport_available),
+            None => viewport_available,
+        };
         let limits = layout::Limits::new(
             Size::ZERO,
-            Size::new(
-                bounds.width - self.position.x,
-                if space_below > space_above {
-                    (space_below - input_height - footer_height_estimate).max(0.0)
-                } else {
-                    (space_above - input_height - footer_height_estimate).max(0.0)
-                },
-            ),
+            Size::new(bounds.width - self.position.x, max_allowed),
         )
         .width(self.width);
 
