@@ -42,6 +42,8 @@ impl App {
                 .on_press(Message::RunDemo("lazy-icon-test")),
             button(text("Ellipsis Text").width(Length::Fill))
                 .on_press(Message::RunDemo("ellipsis-text-test")),
+            button(text("Title Bar").width(Length::Fill))
+                .on_press(Message::RunDemo("title-bar-test")),
         ]
         .spacing(8)
         .padding(24);

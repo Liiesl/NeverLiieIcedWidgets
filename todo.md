@@ -59,6 +59,7 @@
 - [ ] ColorPicker - color selection widget (missing)
 - [ ] MultiSelect - select multiple items from list (missing)
 - [ ] VirtualList - lazy rendering for large datasets (missing)
+- [x] TitleBar/WindowFrame - custom cross-platform title bar (`src/title_bar/` - ported from iced-native-frame, WM_NCHITTEST subclass on Windows, overlay resize handles elsewhere)
 
 ---
 

@@ -1,0 +1,9 @@
+[package]
+name = "title-bar-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+iced = { path = "../../iced", features = ["default"] }
+neverliie-iced-widgets = { path = "../.." }
