@@ -18,6 +18,7 @@ This library provides additional widgets for iced that are not available in the 
 | [Lazy Icon](docs/lazy_icon.md) | Lazy-loading icon with placeholder, plus skeleton `placeholder` widget | Stable |
 | [Ellipsis Text](docs/ellipsis_text.md) | Line-clamped text with ellipsis (`…`) truncation | Stable |
 | [Color Picker](docs/color_picker.md) | Dialog-style color picker with hue ring, RGB/HSV sliders, swatches and recent colors | Stable |
+| [Title Bar](docs/title_bar.md) | Cross-platform custom window frame with native Windows 11 caption semantics (Snap Layouts, accent border) | Stable |
 
 ## Installation
 
@@ -86,6 +87,9 @@ cargo run -p ellipsis-text-test
 
 # Color picker dialog (hue ring, RGB/HSV tabs, swatches, recent colors)
 cargo run -p color-picker-test
+
+# Custom title bar / window frame (menus in the bar, Snap Layouts, resize, theme switching)
+cargo run -p title-bar-test
 
 # Launcher menu for the demos above
 cargo run -p launcher
