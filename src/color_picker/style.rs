@@ -131,6 +131,40 @@ pub struct Style {
 
     /// The background of the Reset button while hovered.
     pub reset_hover_background: Color,
+
+    /// The background of the draggable window header
+    /// (only drawn by [`FloatingColorPicker`](crate::color_picker::FloatingColorPicker)).
+    pub header_background: Background,
+
+    /// The color of the divider line under the draggable window header.
+    pub header_border_color: Color,
+
+    /// The background of the header close ("x") button.
+    pub close_button_background: Color,
+
+    /// The background of the header close ("x") button while hovered.
+    pub close_button_hover_background: Color,
+
+    /// The border color of the header close ("x") button.
+    pub close_button_border_color: Color,
+
+    /// The color of the "x" glyph of the header close button.
+    pub close_symbol_color: Color,
+
+    /// The backdrop of the eye dropper magnifier lens.
+    pub lens_backdrop: Color,
+
+    /// The border of the eye dropper magnifier lens.
+    pub lens_border_color: Color,
+
+    /// The crosshair marking the exact sampled pixel inside the lens.
+    pub lens_crosshair_color: Color,
+
+    /// The background of the hex readout pill below the lens grid.
+    pub lens_pill_background: Color,
+
+    /// The text color of the hex readout pill below the lens grid.
+    pub lens_pill_text: Color,
 }
 
 /// The Catalog of a [`ColorPicker`](crate::color_picker::ColorPicker).
@@ -194,6 +228,10 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
     let reset = p.danger.weak.color;
     let reset_hover = lerp(p.danger.weak.color, p.danger.base.color, 0.4);
 
+    // Accent used by the active/selected tab and focus outlines.
+    let accent: iced::theme::palette::Secondary = p.secondary;
+    let prim: iced::theme::palette::Primary = p.primary;
+
     // Checkerboard tiles (`#C8C8C8` / `#E6E6E6`), semi-transparent so the
     // picked color shows through; alpha groove tiles are the same pair
     // darkened by 0.25.
@@ -239,11 +277,18 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
         swatch_hover_border_color: text_primary,
         reset_background: reset,
         reset_hover_background: reset_hover,
+        header_background: panel.into(),
+        header_border_color: neutral,
+        close_button_background: Color::TRANSPARENT,
+        close_button_hover_background: p.danger.base.color,
+        close_button_border_color: Color::TRANSPARENT,
+        close_symbol_color: text_secondary,
+        lens_backdrop: lerp(panel, Color::BLACK, 0.35),
+        lens_border_color: handle_border,
+        lens_crosshair_color: prim.base.color,
+        lens_pill_background: lerp(panel, Color::BLACK, 0.5),
+        lens_pill_text: text_primary,
     };
-
-    // Accent used by the active/selected tab and focus outlines.
-    let accent: iced::theme::palette::Secondary = p.secondary;
-    let prim: iced::theme::palette::Primary = p.primary;
 
     match status {
         Status::Focused => Style {
@@ -397,6 +442,8 @@ mod tests {
             assert_ne!(style.reset_background, Color::TRANSPARENT);
             assert_ne!(style.reset_hover_background, Color::TRANSPARENT);
             assert_ne!(style.panel_border_color, Color::TRANSPARENT);
+            assert_ne!(style.header_border_color, Color::TRANSPARENT);
+            assert_ne!(style.close_symbol_color, Color::TRANSPARENT);
             assert_eq!(style.panel_border_radius, 5.0);
             assert_eq!(style.border_radius, 10.0);
 
@@ -406,6 +453,7 @@ mod tests {
                 &style.tab_background,
                 &style.tab_selected_background,
                 &style.tab_hover_background,
+                &style.header_background,
             ] {
                 assert!(matches!(field, Background::Color(c) if c.a > 0.0));
             }

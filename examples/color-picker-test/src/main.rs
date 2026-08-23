@@ -1,7 +1,10 @@
 use iced::widget::{button, column, container, rule, scrollable, space, text};
+use iced::window::{self, screenshot::Screenshot};
 use iced::{Background, Border, Color, Element, Length, Shadow, Task, Theme, Vector};
 
-use neverliie_iced_widgets::color_picker::{color_picker_with_change, ColorPicker};
+use neverliie_iced_widgets::color_picker::{
+    floating_color_picker_with_change, ColorPicker, DropperBuffer, FloatingColorPicker,
+};
 use neverliie_iced_widgets::overlay::{Anchor, Position};
 
 fn main() -> iced::Result {
@@ -12,6 +15,10 @@ fn main() -> iced::Result {
 
 struct App {
     log: Vec<String>,
+    // === Inline mode: the widget is planted directly into the layout ===
+    inline_color: Color,
+    inline_live_color: Color,
+    // === Floating modes: a button spawns a draggable window-like dialog ===
     builder_color: Color,
     builder_live_color: Color,
     helper_color: Color,
@@ -22,6 +29,8 @@ struct App {
     show_helper_picker: bool,
     show_position_picker: bool,
     position_choice: PositionChoice,
+    // === Eye dropper: shared buffer the app deposits window screenshots in ===
+    dropper_buffer: DropperBuffer,
 }
 
 impl App {
@@ -29,6 +38,8 @@ impl App {
         (
             Self {
                 log: vec!["Pick a color to change each panel's preview swatch.".into()],
+                inline_color: Color::from_rgb(0.9, 0.3, 0.6),
+                inline_live_color: Color::from_rgb(0.9, 0.3, 0.6),
                 builder_color: Color::from_rgb(1.0, 0.55, 0.0),
                 builder_live_color: Color::from_rgb(1.0, 0.55, 0.0),
                 helper_color: Color::from_rgb(0.3, 0.6, 0.9),
@@ -39,6 +50,7 @@ impl App {
                 show_helper_picker: false,
                 show_position_picker: false,
                 position_choice: PositionChoice::BottomRight,
+                dropper_buffer: DropperBuffer::new(),
             },
             Task::none(),
         )
@@ -49,7 +61,7 @@ impl App {
     }
 }
 
-/// The position strategies demonstrated by the "Position API" panel.
+/// The initial position strategies demonstrated by the "Position API" panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PositionChoice {
     BottomRight,
@@ -94,6 +106,11 @@ impl PositionChoice {
 
 #[derive(Debug, Clone)]
 enum Message {
+    // Inline mode
+    InlineCancel,
+    InlineSubmit(Color),
+    InlineColorChanged(Color),
+    // Floating modes
     OpenBuilder,
     OpenHelper,
     BuilderCancel,
@@ -107,11 +124,26 @@ enum Message {
     PositionCancel,
     PositionSubmit(Color),
     PositionColorChanged(Color),
+    // Eye dropper capture round-trip
+    DropperCapture,
+    DropperShot(Screenshot),
 }
 
 impl App {
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::InlineCancel => {
+                self.inline_color = self.inline_live_color;
+                self.log_entry("Inline picker cancelled (kept live color)");
+            }
+            Message::InlineSubmit(color) => {
+                self.inline_color = color;
+                self.inline_live_color = color;
+                self.log_entry(format!("Inline picker submitted: {}", hex(color)));
+            }
+            Message::InlineColorChanged(color) => {
+                self.inline_live_color = color;
+            }
             Message::OpenBuilder => {
                 self.show_builder_picker = true;
                 self.log_entry("Builder picker opened");
@@ -171,7 +203,18 @@ impl App {
             Message::PositionColorChanged(color) => {
                 self.position_live_color = color;
             }
+            // The picker requested a fresh window snapshot for the eye
+            // dropper: capture the window and hand it to the shared buffer.
+            Message::DropperCapture => {
+                self.log_entry("Eye dropper capturing window...");
+                return window::latest().and_then(window::screenshot).map(Message::DropperShot);
+            }
+            Message::DropperShot(screenshot) => {
+                self.dropper_buffer.store(&screenshot);
+            }
         }
+
+        Task::none()
     }
 
     fn log_entry(&mut self, msg: impl Into<String>) {
@@ -182,8 +225,41 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        // === Position API panel ===
-        let position_picker = ColorPicker::new(
+        // === Inline panel: generic widget planted like any other ===
+        let inline_picker = ColorPicker::new(
+            self.inline_color,
+            Message::InlineCancel,
+            Message::InlineSubmit,
+        )
+        .on_color_change(Message::InlineColorChanged)
+        .dropper_buffer(self.dropper_buffer.clone())
+        .on_dropper_capture(|| Message::DropperCapture);
+
+        let inline_panel = container(
+            column![
+                text("Inline Widget").size(18),
+                rule::horizontal(1),
+                text(
+                    "ColorPicker::new(...) planted in the layout - \
+                     no button or spawn flag needed."
+                )
+                .size(12),
+                space::vertical().height(8),
+                self.swatch(self.inline_live_color),
+                text(hex(self.inline_live_color)).size(13),
+                space::vertical().height(8),
+                scrollable(inline_picker)
+                .width(Length::Fill)
+                .height(Length::Fill),
+            ]
+            .spacing(8)
+            .padding(20),
+        )
+        .width(600)
+        .height(Length::Fill);
+
+        // === Position API panel (floating) ===
+        let position_picker = FloatingColorPicker::new(
             self.show_position_picker,
             self.position_live_color,
             self.pick_button(
@@ -195,10 +271,12 @@ impl App {
             Message::PositionSubmit,
         )
         .on_color_change(Message::PositionColorChanged)
-        .position(self.position_choice.position());
+        .position(self.position_choice.position())
+        .dropper_buffer(self.dropper_buffer.clone())
+        .on_dropper_capture(|| Message::DropperCapture);
 
         let choice_buttons = column![
-            text("Current:").size(12),
+            text("Initial position:").size(12),
             text(self.position_choice.label()).size(13),
             space::vertical().height(4),
         ]
@@ -217,7 +295,7 @@ impl App {
             column![
                 text("Position API").size(18),
                 rule::horizontal(1),
-                text("ColorPicker::new(...) and .position(Position::...).").size(12),
+                text("FloatingColorPicker::new(...) and .position(Position::...); drag by the header afterwards.").size(12),
                 space::vertical().height(8),
                 self.swatch(self.position_live_color),
                 text(hex(self.position_live_color)).size(13),
@@ -232,21 +310,23 @@ impl App {
         .width(220)
         .height(Length::Fill);
 
-        // === Builder panel: builder API (`ColorPicker::new`) ===
-        let builder_picker = ColorPicker::new(
+        // === Builder panel: builder API (`FloatingColorPicker::new`) ===
+        let builder_picker = FloatingColorPicker::new(
             self.show_builder_picker,
             self.builder_live_color,
             self.pick_button("Builder API", "Open builder picker", Message::OpenBuilder),
             Message::BuilderCancel,
             Message::BuilderSubmit,
         )
-        .on_color_change(Message::BuilderColorChanged);
+        .on_color_change(Message::BuilderColorChanged)
+        .dropper_buffer(self.dropper_buffer.clone())
+        .on_dropper_capture(|| Message::DropperCapture);
 
         let builder_panel = container(
             column![
                 text("Builder API").size(18),
                 rule::horizontal(1),
-                text("ColorPicker::new(...) with on_color_change for live preview.").size(12),
+                text("FloatingColorPicker::new(...) spawns a draggable window-style dialog.").size(12),
                 space::vertical().height(8),
                 self.swatch(self.builder_live_color),
                 text(hex(self.builder_live_color)).size(13),
@@ -260,20 +340,22 @@ impl App {
         .height(Length::Fill);
 
         // === Center panel: shortcut helper API ===
-        let helper_picker = color_picker_with_change(
+        let helper_picker = floating_color_picker_with_change(
             self.show_helper_picker,
             self.helper_live_color,
             self.pick_button("Helper API", "Open helper picker", Message::OpenHelper),
             Message::HelperCancel,
             Message::HelperSubmit,
             Message::HelperColorChanged,
-        );
+        )
+        .dropper_buffer(self.dropper_buffer.clone())
+        .on_dropper_capture(|| Message::DropperCapture);
 
         let helper_panel = container(
             column![
                 text("Helper API").size(18),
                 rule::horizontal(1),
-                text("color_picker_with_change(...) shortcut, same live preview.").size(12),
+                text("floating_color_picker_with_change(...) shortcut, same live preview.").size(12),
                 space::vertical().height(8),
                 self.swatch(self.helper_live_color),
                 text(hex(self.helper_live_color)).size(13),
@@ -306,7 +388,7 @@ impl App {
         .width(260)
         .height(Length::Fill);
 
-        iced::widget::row![position_panel, builder_panel, helper_panel, log_panel]
+        iced::widget::row![inline_panel, position_panel, builder_panel, helper_panel, log_panel]
             .spacing(8)
             .padding(8)
             .height(Length::Fill)

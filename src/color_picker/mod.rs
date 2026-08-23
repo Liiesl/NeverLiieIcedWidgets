@@ -1,22 +1,49 @@
 //! Use a color picker as an input element for picking colors.
 //!
-//! Ported from `iced_aw`'s `widget::color_picker` module, with the overlay
+//! Ported from `iced_aw`'s `widget::color_picker` module, with the dialog
 //! reworked to mirror the PySide6 `BetterColorDialog`:
 //!
 //! * a hue ring + saturation/value square picker on the left, next to
 //!   RGB(A)/HSV tabbed gradient sliders, value fields and a hex input;
 //! * on the right: Original/New preview panels, tabbed swatch sets (with
 //!   an add-set name prompt and per-set close marks), an add-current-color
-//!   button, a recent colors grid and the Reset/OK/Cancel buttons.
+//!   button, a recent colors grid and the Reset/Eyedropper/OK buttons.
+//!
+//! The dialog content is available in two shapes:
+//!
+//! * [`ColorPicker`] — a generic, always visible widget that can be planted
+//!   into any builder like a regular widget. There is no button to spawn
+//!   it: the application controls visibility by planting or not planting
+//!   the element.
+//! * [`FloatingColorPicker`] — wraps an underlay (typically a button) and,
+//!   while shown, spawns the same dialog inside a free-floating window-like
+//!   shell: a draggable header with an empty drag area and a close ("x")
+//!   button. It is still a regular overlay/widget, not a separate OS
+//!   window; the dragged position survives close/reopen.
 //!
 //! Swatches and recent colors are kept in memory only (no persistence),
 //! and all styling is derived from the active iced `Theme` palette.
 //!
-//! # Example
+//! # Example (inline)
 //! ```no_run
-//! # use neverliie_iced_widgets::color_picker::{ColorPicker, color_picker};
+//! # use neverliie_iced_widgets::color_picker::{color_picker, ColorPicker};
+//! # use iced::{Color, Element};
+//! #
+//! #[derive(Clone, Debug)]
+//! enum Message {
+//!     Cancel,
+//!     Submit(Color),
+//! }
+//!
+//! let picker = color_picker(Color::default(), Message::Cancel, Message::Submit);
+//! # let _: Element<Message> = picker.into();
+//! ```
+//!
+//! # Example (floating)
+//! ```no_run
+//! # use neverliie_iced_widgets::color_picker::floating_color_picker;
 //! # use neverliie_iced_widgets::overlay::Position;
-//! # use iced::{Color, Element, widget::{button, Button, Text}};
+//! # use iced::{Color, Element, widget::button};
 //! #
 //! #[derive(Clone, Debug)]
 //! enum Message {
@@ -25,7 +52,7 @@
 //!     Submit(Color),
 //! }
 //!
-//! let color_picker = color_picker(
+//! let floating = floating_color_picker(
 //!     true,
 //!     Color::default(),
 //!     button("Pick color").on_press(Message::Open),
@@ -33,18 +60,26 @@
 //!     Message::Submit,
 //! )
 //! .position(Position::BottomRight);
-//! # let _ = color_picker;
+//! # let _: Element<Message> = floating.into();
 //! ```
 
 mod color;
+mod dropper;
 mod overlay;
 pub mod style;
 pub mod style_state;
 
-use self::overlay::{ColorBarDragged, ColorPickerOverlay, ColorPickerOverlayButtons};
+pub use dropper::DropperBuffer;
+
+use self::dropper::DropperMode;
+use self::overlay::{
+    ColorBarDragged, ColorPickerOverlay, ColorPickerOverlayButtons, ColorPickerWindow, DropperLens,
+};
 use self::style::{Status, Style, StyleFn};
 
 use crate::overlay::Position;
+
+use std::cell::UnsafeCell;
 
 use iced::{
     advanced::{
@@ -62,25 +97,30 @@ use iced::{
 };
 
 //TODO: Remove ignore when Null is updated. Temp fix for Test runs
-/// An input element for picking colors.
+/// A color picker widget that can be planted anywhere in a builder.
+///
+/// Unlike [`FloatingColorPicker`], this is a plain always visible widget:
+/// there is no underlay and no spawn flag. Render it whenever the dialog
+/// should be visible and stop rendering it when it should be closed.
+///
+/// While mounted it "owns" the picked value internally; the `color`
+/// argument only re-seeds the selection when the application passes a new
+/// value that differs from both the previous argument and the current
+/// internal selection.
 ///
 /// # Example
 /// ```ignore
 /// # use neverliie_iced_widgets::color_picker::ColorPicker;
-/// # use iced::{Color, widget::{button, Button, Text}};
+/// # use iced::{Color};
 /// #
 /// #[derive(Clone, Debug)]
 /// enum Message {
-///     Open,
 ///     Cancel,
 ///     Submit(Color),
 /// }
 ///
-/// let color_picker = ColorPicker::new(
-///     true,
+/// let picker = ColorPicker::new(
 ///     Color::default(),
-///     Button::new(Text::new("Pick color"))
-///         .on_press(Message::Open),
 ///     Message::Cancel,
 ///     Message::Submit,
 /// );
@@ -91,25 +131,26 @@ where
     Message: Clone,
     Theme: style::Catalog + iced::widget::button::Catalog,
 {
-    /// Show the picker.
-    show_picker: bool,
     /// The color to show.
     color: Color,
-    /// The underlying element.
-    underlay: Element<'a, Message, Theme, Renderer>,
-    /// The message that is sent if the cancel button of the [`ColorPickerOverlay`] is pressed.
+    /// A placeholder message with no user-facing effect: the inline dialog
+    /// has no cancel button, and its internal controls only publish it as a
+    /// dummy value that the widget intercepts.
     on_cancel: Message,
-    /// The function that produces a message when the submit button of the [`ColorPickerOverlay`] is pressed.
+    /// The function that produces a message when the submit button of the dialog is pressed.
     on_submit: Box<dyn Fn(Color) -> Message>,
     /// Optional function that produces a message when the color changes during selection (real-time updates).
     on_color_change: Option<Box<dyn Fn(Color) -> Message>>,
-    /// The style of the [`ColorPickerOverlay`].
+    /// Shared buffer receiving window screenshots for the eye dropper; the
+    /// eyedropper button stays disabled while this is `None`.
+    dropper_buffer: Option<DropperBuffer>,
+    /// Optional function producing the message published when the user
+    /// activates the eye dropper and a fresh capture is needed.
+    on_dropper_capture: Option<Box<dyn Fn() -> Message>>,
+    /// The style of the dialog.
     class: <Theme as style::Catalog>::Class<'a>,
-    /// The position of the [`ColorPickerOverlay`]; `None` centers the dialog
-    /// over the underlay.
-    position: Option<Position>,
-    /// The buttons of the overlay.
-    overlay_state: Element<'a, Message, Theme, Renderer>,
+    /// Tree state holder for the dialog's buttons.
+    content_state: Element<'a, Message, Theme, Renderer>,
 }
 
 impl<'a, Message, Theme> ColorPicker<'a, Message, Theme>
@@ -121,38 +162,70 @@ where
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
 {
-    /// Creates a new [`ColorPicker`] wrapping around the given underlay.
+    /// Builds the transient dialog content view from shared references.
+    ///
+    /// Builds the transient dialog content view from shared references.
+    ///
+    /// Used only by the read-only passes (`draw`, `mouse_interaction`):
+    /// neither writes to the picker state nor mutates the tree. Returns
+    /// `None` before the first layout has captured the child tree handle.
+    fn view_immutable<'v>(
+        &'v self,
+        picker_state: &'v State,
+        viewport: Rectangle,
+    ) -> Option<ColorPickerOverlay<'v, 'a, Message, Theme>>
+    where
+        Message: 'static,
+    {
+        let content_tree = picker_state.content_tree;
+        if content_tree.is_null() {
+            return None;
+        }
+
+        // SAFETY: the handle was refreshed from a unique borrow during the
+        // layout/update pass of this frame; iced runs those before draw and
+        // mouse interaction and never overlaps the phases.
+        let tree = unsafe { &mut *content_tree };
+        // SAFETY: no aliasing write occurs during read-only passes (see
+        // `State::overlay_state`).
+        let overlay_state = unsafe { &mut *picker_state.overlay_state.get() };
+
+        Some(ColorPickerOverlay::new(
+            overlay_state,
+            self.on_cancel.clone(),
+            &self.on_submit,
+            self.on_color_change.as_deref(),
+            self.dropper_buffer.as_ref(),
+            self.on_dropper_capture.as_deref(),
+            false,
+            &self.class,
+            tree,
+            viewport,
+        ))
+    }
+
+    /// Creates a new inline [`ColorPicker`].
     ///
     /// It expects:
-    ///     * if the overlay of the color picker is visible.
     ///     * the initial color to show.
-    ///     * the underlay [`Element`] on which this [`ColorPicker`]
-    ///         will be wrapped around.
-    ///     * a message that will be send when the cancel button of the [`ColorPicker`]
-    ///         is pressed.
+    ///     * a placeholder message: the dialog has no cancel button, so it is
+    ///         only used internally as a dummy publication (any cheap message
+    ///         works).
     ///     * a function that will be called when the submit button of the [`ColorPicker`]
     ///         is pressed, which takes the picked [`Color`] value.
-    pub fn new<U, F>(
-        show_picker: bool,
-        color: Color,
-        underlay: U,
-        on_cancel: Message,
-        on_submit: F,
-    ) -> Self
+    pub fn new<F>(color: Color, on_cancel: Message, on_submit: F) -> Self
     where
-        U: Into<Element<'a, Message, Theme, Renderer>>,
         F: 'static + Fn(Color) -> Message,
     {
         Self {
-            show_picker,
             color,
-            underlay: underlay.into(),
             on_cancel,
             on_submit: Box::new(on_submit),
             on_color_change: None,
+            dropper_buffer: None,
+            on_dropper_capture: None,
             class: <Theme as style::Catalog>::default(),
-            position: None,
-            overlay_state: ColorPickerOverlayButtons::default().into(),
+            content_state: ColorPickerOverlayButtons::default().into(),
         }
     }
 
@@ -166,19 +239,31 @@ where
         self
     }
 
-    /// Sets the position of the [`ColorPickerOverlay`].
+    /// Enables the eye dropper with the given shared [`DropperBuffer`].
     ///
-    /// Uses the same [`Position`] strategies as the overlay widget:
-    /// parent-relative, viewport-relative, cursor-following or absolute.
-    /// Defaults to centering the dialog over the underlay.
-    ///
-    /// ```ignore
-    /// color_picker(true, color, underlay, Message::Cancel, Message::Submit)
-    ///     .position(Position::BottomRight)
-    /// ```
+    /// The buffer is where the application deposits window screenshots in
+    /// response to [`Self::on_dropper_capture`] requests; see
+    /// [`DropperBuffer`] for the full round-trip. Without a buffer the
+    /// eyedropper button is disabled.
     #[must_use]
-    pub fn position(mut self, position: Position) -> Self {
-        self.position = Some(position);
+    pub fn dropper_buffer(mut self, buffer: DropperBuffer) -> Self {
+        self.dropper_buffer = Some(buffer);
+        self
+    }
+
+    /// Sets the message published when the user activates the eye dropper
+    /// and a fresh window capture is needed.
+    ///
+    /// The application should react by running `window::latest()` followed
+    /// by `window::screenshot`, then storing the resulting
+    /// `Screenshot` into the [`DropperBuffer`] passed to
+    /// [`Self::dropper_buffer`].
+    #[must_use]
+    pub fn on_dropper_capture<F>(mut self, on_dropper_capture: F) -> Self
+    where
+        F: 'static + Fn() -> Message,
+    {
+        self.on_dropper_capture = Some(Box::new(on_dropper_capture));
         self
     }
 
@@ -203,15 +288,34 @@ where
     }
 }
 
-/// The state of the [`ColorPicker`].
-#[derive(Debug, Default)]
+/// The state of the inline [`ColorPicker`].
 pub struct State {
-    /// The state of the overlay.
-    pub(crate) overlay_state: overlay::State,
-    /// Was overlay shown during the previous render?
-    pub(crate) old_show_picker: bool,
-    /// The last known cursor position, for cursor-following [`Position`]s.
-    pub(crate) last_cursor_position: Point,
+    /// The state of the dialog content.
+    ///
+    /// Wrapped in an [`UnsafeCell`] so the read-only widget passes (`draw`,
+    /// `mouse_interaction`, which only receive `&Tree`) can still hand the
+    /// dialog view the `&mut overlay::State` its plumbing expects. Those
+    /// passes never write through it; iced guarantees the update, layout,
+    /// draw and interaction phases of a frame do not overlap.
+    pub(crate) overlay_state: UnsafeCell<overlay::State>,
+    /// Handle to the dialog's child tree, refreshed on every mutating pass
+    /// (`layout`, `update`, `operate`) so the read-only passes can build
+    /// the content view afterwards within the same frame — mirroring how
+    /// overlays capture their tree during `Widget::overlay`. The child
+    /// count of this widget is fixed, so the address stays valid.
+    content_tree: *mut Tree,
+    /// The `color` seen during the previous render; used to detect external
+    /// changes without clobbering live edits echoed back by the application.
+    pub(crate) old_color: Color,
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State")
+            .field("overlay_state", &self.overlay_state)
+            .field("old_color", &self.old_color)
+            .finish_non_exhaustive()
+    }
 }
 
 impl State {
@@ -219,31 +323,28 @@ impl State {
     #[must_use]
     pub fn new(color: Color) -> Self {
         Self {
-            overlay_state: overlay::State::new(color),
-            old_show_picker: false,
-            last_cursor_position: Point::ORIGIN,
+            overlay_state: UnsafeCell::new(overlay::State::new(color)),
+            content_tree: std::ptr::null_mut(),
+            old_color: color,
         }
     }
 
     /// Resets the color of the state.
     pub fn reset(&mut self) {
-        self.overlay_state.color = Color::from_rgb(0.5, 0.25, 0.25);
-        self.overlay_state.color_bar_dragged = ColorBarDragged::None;
-        self.overlay_state.sync_display();
+        let state = self.overlay_state.get_mut();
+        state.color = Color::from_rgb(0.5, 0.25, 0.25);
+        state.color_bar_dragged = ColorBarDragged::None;
+        state.sync_display();
     }
 
-    /// Synchronize with the provided color when the picker is (re)opened.
-    ///
-    /// Keep the overlay state in sync. While the picker is open it "owns" the
-    /// value (there is no other way the user can update its value): the initial
-    /// color must stay frozen at the open-time color so the Original preview
-    /// panel does not track live `on_color_change` updates. When it is reopened,
-    /// reset the color to the provided one.
-    fn synchronize(&mut self, show_picker: bool, color: Color) {
-        if show_picker && !self.old_show_picker {
-            self.overlay_state.force_synchronize(color);
+    /// Re-seed the dialog when the application passes a genuinely new
+    /// color: one that differs from both the previous argument (so echoed
+    /// live updates are ignored) and the current internal selection.
+    fn synchronize(&mut self, color: Color) {
+        if color != self.old_color && color != self.overlay_state.get_mut().color {
+            self.overlay_state.get_mut().force_synchronize(color);
         }
-        self.old_show_picker = show_picker;
+        self.old_color = color;
     }
 }
 
@@ -265,13 +366,475 @@ where
     }
 
     fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content_state)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        let picker_state = tree.state.downcast_mut::<State>();
+
+        picker_state.synchronize(self.color);
+
+        tree.diff_children(std::slice::from_ref(&self.content_state));
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Shrink, Length::Shrink)
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
+        let picker_state = tree.state.downcast_mut::<State>();
+        picker_state.content_tree = &mut tree.children[0];
+        let bounds = limits.max();
+
+        // SAFETY: unique access; see `State::overlay_state`.
+        let overlay_state = unsafe { &mut *picker_state.overlay_state.get() };
+
+        ColorPickerOverlay::<Message, Theme>::new(
+            overlay_state,
+            self.on_cancel.clone(),
+            &self.on_submit,
+            self.on_color_change.as_deref(),
+            self.dropper_buffer.as_ref(),
+            self.on_dropper_capture.as_deref(),
+            false,
+            &self.class,
+            &mut tree.children[0],
+            Rectangle::with_size(bounds),
+        )
+        .layout_content(renderer, bounds)
+    }
+
+    fn update(
+        &mut self,
+        state: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let picker_state = state.state.downcast_mut::<State>();
+        picker_state.content_tree = &mut state.children[0];
+
+        // SAFETY: unique access; see `State::overlay_state`.
+        let overlay_state = unsafe { &mut *picker_state.overlay_state.get() };
+
+        ColorPickerOverlay::<Message, Theme>::new(
+            overlay_state,
+            self.on_cancel.clone(),
+            &self.on_submit,
+            self.on_color_change.as_deref(),
+            self.dropper_buffer.as_ref(),
+            self.on_dropper_capture.as_deref(),
+            false,
+            &self.class,
+            &mut state.children[0],
+            *viewport,
+        )
+        .update_content(event, layout, cursor, renderer, clipboard, shell);
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Tree,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let picker_state = state.state.downcast_ref::<State>();
+
+        match self.view_immutable(picker_state, *viewport) {
+            Some(view) => view.mouse_interaction_content(layout, cursor, renderer),
+            None => mouse::Interaction::default(),
+        }
+    }
+
+    fn draw(
+        &self,
+        state: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        viewport: &Rectangle,
+    ) {
+        let picker_state = state.state.downcast_ref::<State>();
+
+        if let Some(view) = self.view_immutable(picker_state, *viewport) {
+            view.draw_content(renderer, theme, style, layout, cursor);
+        }
+    }
+
+    fn operate<'b>(
+        &'b mut self,
+        state: &'b mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation<()>,
+    ) {
+        let picker_state = state.state.downcast_mut::<State>();
+        picker_state.content_tree = &mut state.children[0];
+
+        // SAFETY: unique access; see `State::overlay_state`.
+        let overlay_state = unsafe { &mut *picker_state.overlay_state.get() };
+
+        ColorPickerOverlay::<Message, Theme>::new(
+            overlay_state,
+            self.on_cancel.clone(),
+            &self.on_submit,
+            self.on_color_change.as_deref(),
+            self.dropper_buffer.as_ref(),
+            self.on_dropper_capture.as_deref(),
+            false,
+            &self.class,
+            &mut state.children[0],
+            Rectangle::new(layout.bounds().position(), layout.bounds().size()),
+        )
+        .operate_content(layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        _layout: Layout<'b>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        _translation: Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, Renderer>> {
+        let picker_state = tree.state.downcast_mut::<State>();
+        // SAFETY: unique access; see `State::overlay_state`.
+        let overlay_state = unsafe { &mut *picker_state.overlay_state.get() };
+
+        if overlay_state.dropper_mode != DropperMode::Picking {
+            return None;
+        }
+        let Some(frame) = overlay_state.dropper_frame.as_ref() else {
+            return None;
+        };
+
+        // Host the magnifier lens in a full-window overlay so it escapes
+        // ancestor clipping and can follow the cursor across the entire
+        // application window.
+        Some(DropperLens::new(frame, overlay_state.dropper_cursor, &self.class).overlay())
+    }
+}
+
+impl<'a, Message, Theme> From<ColorPicker<'a, Message, Theme>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: 'static + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    fn from(color_picker: ColorPicker<'a, Message, Theme>) -> Self {
+        Element::new(color_picker)
+    }
+}
+
+/// Shortcut helper to create an inline [`ColorPicker`] widget.
+///
+/// [`ColorPicker`]: crate::color_picker::ColorPicker
+pub fn color_picker<'a, Message, Theme, F>(
+    color: Color,
+    on_cancel: Message,
+    on_submit: F,
+) -> ColorPicker<'a, Message, Theme>
+where
+    Message: 'a + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+    F: 'static + Fn(Color) -> Message,
+{
+    ColorPicker::new(color, on_cancel, on_submit)
+}
+
+/// Shortcut helper to create an inline [`ColorPicker`] widget with real-time
+/// color change callback.
+///
+/// [`ColorPicker`]: crate::color_picker::ColorPicker
+pub fn color_picker_with_change<'a, Message, Theme, F, G>(
+    color: Color,
+    on_cancel: Message,
+    on_submit: F,
+    on_color_change: G,
+) -> ColorPicker<'a, Message, Theme>
+where
+    Message: 'a + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+    F: 'static + Fn(Color) -> Message,
+    G: 'static + Fn(Color) -> Message,
+{
+    ColorPicker::new(color, on_cancel, on_submit).on_color_change(on_color_change)
+}
+
+//TODO: Remove ignore when Null is updated. Temp fix for Test runs
+/// An input element for picking colors that floats above the interface.
+///
+/// Wraps an underlay element (typically a button) and, while `show_picker`
+/// is true, spawns the dialog inside a free-floating window-like shell
+/// ([`ColorPickerWindow`]): a draggable header strip with an empty drag
+/// area and a close ("x") button publishing `on_cancel`. The window can be
+/// dragged anywhere inside the viewport; the dragged position survives
+/// close/reopen. This is still a regular overlay widget, not a separate OS
+/// window.
+///
+/// # Example
+/// ```ignore
+/// # use neverliie_iced_widgets::color_picker::FloatingColorPicker;
+/// # use iced::{Color, widget::{button, Button, Text}};
+/// #
+/// #[derive(Clone, Debug)]
+/// enum Message {
+///     Open,
+///     Cancel,
+///     Submit(Color),
+/// }
+///
+/// let color_picker = FloatingColorPicker::new(
+///     true,
+///     Color::default(),
+///     Button::new(Text::new("Pick color"))
+///         .on_press(Message::Open),
+///     Message::Cancel,
+///     Message::Submit,
+/// );
+/// ```
+#[allow(missing_debug_implementations)]
+pub struct FloatingColorPicker<'a, Message, Theme = iced::Theme>
+where
+    Message: Clone,
+    Theme: style::Catalog + iced::widget::button::Catalog,
+{
+    /// Show the picker.
+    show_picker: bool,
+    /// The color to show.
+    color: Color,
+    /// The underlying element.
+    underlay: Element<'a, Message, Theme, Renderer>,
+    /// The message that is sent when the header close ("x") button of the
+    /// floating window is pressed.
+    on_cancel: Message,
+    /// The function that produces a message when the submit button of the dialog is pressed.
+    on_submit: Box<dyn Fn(Color) -> Message>,
+    /// Optional function that produces a message when the color changes during selection (real-time updates).
+    on_color_change: Option<Box<dyn Fn(Color) -> Message>>,
+    /// Shared buffer receiving window screenshots for the eye dropper; the
+    /// eyedropper button stays disabled while this is `None`.
+    dropper_buffer: Option<DropperBuffer>,
+    /// Optional function producing the message published when the user
+    /// activates the eye dropper and a fresh capture is needed.
+    on_dropper_capture: Option<Box<dyn Fn() -> Message>>,
+    /// The style of the dialog.
+    class: <Theme as style::Catalog>::Class<'a>,
+    /// The initial position of the dialog window; dragging overrides it.
+    position: Option<Position>,
+    /// The buttons of the overlay.
+    overlay_state: Element<'a, Message, Theme, Renderer>,
+}
+
+impl<'a, Message, Theme> FloatingColorPicker<'a, Message, Theme>
+where
+    Message: 'a + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    /// Creates a new [`FloatingColorPicker`] wrapping around the given underlay.
+    ///
+    /// It expects:
+    ///     * if the overlay of the color picker is visible.
+    ///     * the initial color to show.
+    ///     * the underlay [`Element`] on which this [`FloatingColorPicker`]
+    ///         will be wrapped around.
+    ///     * a message that will be send when the header close ("x") button
+    ///         of the [`FloatingColorPicker`] window is pressed.
+    ///     * a function that will be called when the submit button of the
+    ///         [`FloatingColorPicker`] is pressed, which takes the picked
+    ///         [`Color`] value.
+    pub fn new<U, F>(
+        show_picker: bool,
+        color: Color,
+        underlay: U,
+        on_cancel: Message,
+        on_submit: F,
+    ) -> Self
+    where
+        U: Into<Element<'a, Message, Theme, Renderer>>,
+        F: 'static + Fn(Color) -> Message,
+    {
+        Self {
+            show_picker,
+            color,
+            underlay: underlay.into(),
+            on_cancel,
+            on_submit: Box::new(on_submit),
+            on_color_change: None,
+            dropper_buffer: None,
+            on_dropper_capture: None,
+            class: <Theme as style::Catalog>::default(),
+            position: None,
+            overlay_state: ColorPickerOverlayButtons::default().into(),
+        }
+    }
+
+    /// Sets a callback that will be called whenever the color changes during selection (real-time updates).
+    #[must_use]
+    pub fn on_color_change<F>(mut self, on_color_change: F) -> Self
+    where
+        F: 'static + Fn(Color) -> Message,
+    {
+        self.on_color_change = Some(Box::new(on_color_change));
+        self
+    }
+
+    /// Enables the eye dropper with the given shared [`DropperBuffer`].
+    ///
+    /// The buffer is where the application deposits window screenshots in
+    /// response to [`Self::on_dropper_capture`] requests; see
+    /// [`DropperBuffer`] for the full round-trip. Without a buffer the
+    /// eyedropper button is disabled.
+    #[must_use]
+    pub fn dropper_buffer(mut self, buffer: DropperBuffer) -> Self {
+        self.dropper_buffer = Some(buffer);
+        self
+    }
+
+    /// Sets the message published when the user activates the eye dropper
+    /// and a fresh window capture is needed.
+    ///
+    /// The application should react by running `window::latest()` followed
+    /// by `window::screenshot`, then storing the resulting
+    /// `Screenshot` into the [`DropperBuffer`] passed to
+    /// [`Self::dropper_buffer`].
+    #[must_use]
+    pub fn on_dropper_capture<F>(mut self, on_dropper_capture: F) -> Self
+    where
+        F: 'static + Fn() -> Message,
+    {
+        self.on_dropper_capture = Some(Box::new(on_dropper_capture));
+        self
+    }
+
+    /// Sets the initial position of the dialog window.
+    ///
+    /// Uses the same [`Position`] strategies as the overlay widget. The user
+    /// can drag the window anywhere afterwards; the dragged position then
+    /// wins and survives close/reopen.
+    ///
+    /// ```ignore
+    /// floating_color_picker(true, color, underlay, Message::Cancel, Message::Submit)
+    ///     .position(Position::BottomRight)
+    /// ```
+    #[must_use]
+    pub fn position(mut self, position: Position) -> Self {
+        self.position = Some(position);
+        self
+    }
+
+    /// Sets the style of the [`FloatingColorPicker`].
+    #[must_use]
+    pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self
+    where
+        <Theme as style::Catalog>::Class<'a>: From<StyleFn<'a, Theme, Style>>,
+    {
+        self.class = (Box::new(style) as StyleFn<'a, Theme, Style>).into();
+        self
+    }
+
+    /// Sets the class of the input of the [`FloatingColorPicker`].
+    #[must_use]
+    pub fn class(
+        mut self,
+        class: impl Into<<Theme as style::Catalog>::Class<'a>>,
+    ) -> Self {
+        self.class = class.into();
+        self
+    }
+}
+
+/// The state of the [`FloatingColorPicker`].
+#[derive(Debug, Default)]
+pub struct FloatingState {
+    /// The state of the dialog.
+    pub(crate) overlay_state: overlay::State,
+    /// Was the window shown during the previous render?
+    pub(crate) old_show_picker: bool,
+    /// The last known cursor position, for cursor-following [`Position`]s.
+    pub(crate) last_cursor_position: Point,
+}
+
+impl FloatingState {    /// Creates a new [`FloatingState`].
+    #[must_use]
+    pub fn new(color: Color) -> Self {
+        Self {
+            overlay_state: overlay::State::new(color),
+            old_show_picker: false,
+            last_cursor_position: Point::ORIGIN,
+        }
+    }
+
+    /// Resets the color of the state.
+    pub fn reset(&mut self) {
+        self.overlay_state.color = Color::from_rgb(0.5, 0.25, 0.25);
+        self.overlay_state.color_bar_dragged = ColorBarDragged::None;
+        self.overlay_state.sync_display();
+    }
+
+    /// Synchronize with the provided color when the picker is (re)opened.
+    ///
+    /// Keep the overlay state in sync. While the window is open it "owns"
+    /// the value: the initial color must stay frozen at the open-time color
+    /// so the Original preview panel does not track live `on_color_change`
+    /// updates. When it is reopened, reset the color to the provided one.
+    fn synchronize(&mut self, show_picker: bool, color: Color) {
+        if show_picker && !self.old_show_picker {
+            self.overlay_state.force_synchronize(color);
+        }
+        self.old_show_picker = show_picker;
+    }
+}
+
+impl<'a, Message, Theme> Widget<Message, Theme, Renderer> for FloatingColorPicker<'a, Message, Theme>
+where
+    Message: 'static + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    fn tag(&self) -> Tag {
+        Tag::of::<FloatingState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(FloatingState::new(self.color))
+    }
+
+    fn children(&self) -> Vec<Tree> {
         vec![Tree::new(&self.underlay), Tree::new(&self.overlay_state)]
     }
 
     fn diff(&self, tree: &mut Tree) {
-        let color_picker_state = tree.state.downcast_mut::<State>();
+        let picker_state = tree.state.downcast_mut::<FloatingState>();
 
-        color_picker_state.synchronize(self.show_picker, self.color);
+        picker_state.synchronize(self.show_picker, self.color);
 
         tree.diff_children(&[&self.underlay, &self.overlay_state]);
     }
@@ -298,9 +861,9 @@ where
         viewport: &Rectangle,
     ) {
         // Track the cursor position for cursor-following positions, and
-        // request redraws so the dialog keeps following the mouse.
+        // request redraws so the window keeps following the mouse.
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
-            state.state.downcast_mut::<State>().last_cursor_position = *position;
+            state.state.downcast_mut::<FloatingState>().last_cursor_position = *position;
             if self
                 .position
                 .is_some_and(|p| matches!(p, Position::Cursor { .. } | Position::FollowCursor))
@@ -379,7 +942,7 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, Renderer>> {
-        let picker_state: &mut State = tree.state.downcast_mut();
+        let picker_state: &mut FloatingState = tree.state.downcast_mut();
 
         if !self.show_picker {
             return self.underlay.as_widget_mut().overlay(
@@ -397,11 +960,13 @@ where
         let cursor_position = picker_state.last_cursor_position;
 
         Some(
-            ColorPickerOverlay::new(
-                picker_state,
+            ColorPickerWindow::new(
+                &mut picker_state.overlay_state,
                 self.on_cancel.clone(),
                 &self.on_submit,
                 self.on_color_change.as_deref(),
+                self.dropper_buffer.as_ref(),
+                self.on_dropper_capture.as_deref(),
                 self.position,
                 parent_bounds,
                 fallback_center,
@@ -415,7 +980,7 @@ where
     }
 }
 
-impl<'a, Message, Theme> From<ColorPicker<'a, Message, Theme>>
+impl<'a, Message, Theme> From<FloatingColorPicker<'a, Message, Theme>>
     for Element<'a, Message, Theme, Renderer>
 where
     Message: 'static + Clone,
@@ -425,22 +990,23 @@ where
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
 {
-    fn from(color_picker: ColorPicker<'a, Message, Theme>) -> Self {
+    fn from(color_picker: FloatingColorPicker<'a, Message, Theme>) -> Self {
         Element::new(color_picker)
     }
 }
 
-/// Shortcut helper to create a [`ColorPicker`] Widget.
+/// Shortcut helper to create a [`FloatingColorPicker`] widget.
 ///
-/// [`ColorPicker`]: crate::color_picker::ColorPicker
-pub fn color_picker<'a, Message, Theme, F>(
+/// [`FloatingColorPicker`]: crate::color_picker::FloatingColorPicker
+pub fn floating_color_picker<'a, Message, Theme, U, F>(
     show_picker: bool,
     color: Color,
-    underlay: impl Into<Element<'a, Message, Theme, Renderer>>,
+    underlay: U,
     on_cancel: Message,
     on_submit: F,
-) -> ColorPicker<'a, Message, Theme>
+) -> FloatingColorPicker<'a, Message, Theme>
 where
+    U: Into<Element<'a, Message, Theme, Renderer>>,
     Message: 'a + Clone,
     Theme: 'a
         + style::Catalog
@@ -449,22 +1015,23 @@ where
         + iced::widget::text_input::Catalog,
     F: 'static + Fn(Color) -> Message,
 {
-    ColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
+    FloatingColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
 }
 
-/// Shortcut helper to create a [`ColorPicker`] Widget with real-time color change
-/// callback.
+/// Shortcut helper to create a [`FloatingColorPicker`] widget with real-time
+/// color change callback.
 ///
-/// [`ColorPicker`]: crate::color_picker::ColorPicker
-pub fn color_picker_with_change<'a, Message, Theme, F, G>(
+/// [`FloatingColorPicker`]: crate::color_picker::FloatingColorPicker
+pub fn floating_color_picker_with_change<'a, Message, Theme, U, F, G>(
     show_picker: bool,
     color: Color,
-    underlay: impl Into<Element<'a, Message, Theme, Renderer>>,
+    underlay: U,
     on_cancel: Message,
     on_submit: F,
     on_color_change: G,
-) -> ColorPicker<'a, Message, Theme>
+) -> FloatingColorPicker<'a, Message, Theme>
 where
+    U: Into<Element<'a, Message, Theme, Renderer>>,
     Message: 'a + Clone,
     Theme: 'a
         + style::Catalog
@@ -474,7 +1041,7 @@ where
     F: 'static + Fn(Color) -> Message,
     G: 'static + Fn(Color) -> Message,
 {
-    ColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
+    FloatingColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
         .on_color_change(on_color_change)
 }
 
@@ -489,17 +1056,50 @@ mod tests {
     }
 
     type TestColorPicker<'a> = ColorPicker<'a, TestMessage, iced::Theme>;
+    type TestFloatingPicker<'a> = FloatingColorPicker<'a, TestMessage, iced::Theme>;
 
     fn create_test_button() -> iced::widget::Button<'static, TestMessage, iced::Theme> {
         iced::widget::button(iced::widget::Text::new("Pick"))
     }
 
     #[test]
-    fn color_picker_new_with_picker_hidden() {
+    fn color_picker_new() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+
+        let picker = TestColorPicker::new(color, TestMessage::Cancel, TestMessage::Submit);
+
+        assert_eq!(picker.color, color);
+    }
+
+    #[test]
+    fn color_picker_default_has_no_color_change() {
+        let picker = TestColorPicker::new(
+            Color::from_rgb(0.3, 0.6, 0.9),
+            TestMessage::Cancel,
+            TestMessage::Submit,
+        );
+
+        assert!(picker.on_color_change.is_none());
+    }
+
+    #[test]
+    fn color_picker_with_change_builder_stores_callback() {
+        let picker = TestColorPicker::new(
+            Color::from_rgb(0.3, 0.6, 0.9),
+            TestMessage::Cancel,
+            TestMessage::Submit,
+        )
+        .on_color_change(TestMessage::Submit);
+
+        assert!(picker.on_color_change.is_some());
+    }
+
+    #[test]
+    fn floating_picker_new_with_picker_hidden() {
         let color = Color::from_rgb(0.5, 0.5, 0.5);
         let button = create_test_button();
 
-        let picker = TestColorPicker::new(
+        let picker = TestFloatingPicker::new(
             false,
             color,
             button,
@@ -512,11 +1112,11 @@ mod tests {
     }
 
     #[test]
-    fn color_picker_new_with_picker_shown() {
+    fn floating_picker_new_with_picker_shown() {
         let color = Color::from_rgb(0.3, 0.6, 0.9);
         let button = create_test_button();
 
-        let picker = TestColorPicker::new(
+        let picker = TestFloatingPicker::new(
             true,
             color,
             button,
@@ -529,9 +1129,9 @@ mod tests {
     }
 
     #[test]
-    fn color_picker_default_position_is_none() {
+    fn floating_picker_default_position_is_none() {
         let button = create_test_button();
-        let picker = TestColorPicker::new(
+        let picker = TestFloatingPicker::new(
             false,
             Color::from_rgb(0.5, 0.5, 0.5),
             button,
@@ -543,9 +1143,9 @@ mod tests {
     }
 
     #[test]
-    fn color_picker_position_builder_stores_position() {
+    fn floating_picker_position_builder_stores_position() {
         let button = create_test_button();
-        let picker = TestColorPicker::new(
+        let picker = TestFloatingPicker::new(
             false,
             Color::from_rgb(0.5, 0.5, 0.5),
             button,
@@ -558,36 +1158,64 @@ mod tests {
     }
 
     #[test]
-    fn color_picker_state_new() {
+    fn inline_state_new_seeds_old_color() {
         let color = Color::from_rgb(0.5, 0.5, 0.5);
-        let state = State::new(color);
+        let mut state = State::new(color);
 
-        assert!(!state.old_show_picker);
-        assert_eq!(state.last_cursor_position, Point::ORIGIN);
+        assert_eq!(state.old_color, color);
+        assert_eq!(state.overlay_state.get_mut().color, color);
     }
 
     #[test]
-    fn color_picker_state_default() {
-        let state = State::default();
-
-        assert!(!state.old_show_picker);
-    }
-
-    #[test]
-    fn color_picker_state_reset() {
+    fn inline_state_reset() {
         let color = Color::from_rgb(0.5, 0.5, 0.5);
         let mut state = State::new(color);
 
         state.reset();
-        // State should still be valid after reset
-        assert!(!state.old_show_picker);
+
+        assert_eq!(
+            state.overlay_state.get_mut().color,
+            Color::from_rgb(0.5, 0.25, 0.25)
+        );
     }
 
     #[test]
-    fn synchronize_freeze_initial_color_while_open() {
+    fn inline_synchronize_ignores_echoed_live_updates() {
         let open_color = Color::from_rgb(0.3, 0.6, 0.9);
         let live_color = Color::from_rgb(1.0, 0.0, 0.0);
         let mut state = State::new(open_color);
+
+        // The user edits internally; the application echoes the same value
+        // back through the `color` argument. That echo must not clobber the
+        // internal selection.
+        state.overlay_state.get_mut().apply_color(live_color);
+        state.synchronize(live_color);
+        assert_eq!(state.overlay_state.get_mut().color, live_color);
+
+        // A genuinely different external color re-seeds the dialog.
+        let reset_color = Color::from_rgb(0.0, 1.0, 0.0);
+        state.synchronize(reset_color);
+        assert_eq!(state.overlay_state.get_mut().color, reset_color);
+    }
+
+    #[test]
+    fn inline_synchronize_ignores_stale_argument() {
+        let open_color = Color::from_rgb(0.3, 0.6, 0.9);
+        let mut state = State::new(open_color);
+
+        // The application does not echo live updates: the stale argument
+        // keeps arriving every frame and must not freeze the dialog.
+        let edited = Color::from_rgb(0.2, 0.2, 0.8);
+        state.overlay_state.get_mut().apply_color(edited);
+        state.synchronize(open_color);
+        assert_eq!(state.overlay_state.get_mut().color, edited);
+    }
+
+    #[test]
+    fn floating_synchronize_freeze_initial_color_while_open() {
+        let open_color = Color::from_rgb(0.3, 0.6, 0.9);
+        let live_color = Color::from_rgb(1.0, 0.0, 0.0);
+        let mut state = FloatingState::new(open_color);
 
         state.synchronize(true, open_color);
         assert_eq!(state.overlay_state.color, open_color);
