@@ -7,9 +7,9 @@ use super::{
         clamp_hue, clamp_u8, color_to_hex_argb, hue_from_angle, is_valid_hex, parse_hex_digits,
         Hsv,
     },
+    dropper::{DropperBuffer, DropperMode, Frame},
     style::{self, Status, Style},
     style_state::StyleState,
-    State as WidgetState,
 };
 
 use crate::overlay::{clamp_to_viewport, Position as OverlayPosition};
@@ -38,8 +38,14 @@ use iced::{
 };
 use std::collections::HashMap;
 
-/// The maximal size of the dialog overlay.
+/// The maximal size of the dialog content.
 const DIALOG_MAX_SIZE: Size = Size::new(640.0, 470.0);
+/// The height of the draggable window header of the
+/// [`ColorPickerWindow`]. The header is an empty drag strip with a
+/// close button on the right.
+const HEADER_HEIGHT: f32 = 28.0;
+/// The size of the square close ("x") button inside the window header.
+const CLOSE_BUTTON_SIZE: f32 = 20.0;
 /// The margin around the dialog content (Qt: contentsMargins 15).
 const OUTER_MARGIN: f32 = 15.0;
 /// The spacing between the left and right pane (Qt: main_h_layout spacing 15).
@@ -80,8 +86,21 @@ const RIGHT_PANE_WIDTH: f32 = 230.0;
 const MAX_RECENT: usize = 12;
 /// The maximum number of swatches per set.
 const MAX_SWATCHES_PER_SET: usize = 24;
-/// The number of columns of the swatch/recent grids.
-const GRID_COLS: usize = 5;
+
+/// Half-extent of the eye dropper magnifier source window: the lens samples
+/// a `(2 * LENS_SRC_RADIUS + 1)²` pixel neighborhood around the hovered
+/// pixel.
+const LENS_SRC_RADIUS: i32 = 6;
+/// The size of one zoomed source pixel inside the lens, in logical pixels.
+const LENS_CELL: f32 = 12.0;
+/// The gap between zoomed pixels; forms the pixel grid of the lens.
+const LENS_GAP: f32 = 1.0;
+/// Padding between the lens backdrop border and the pixel grid / pill.
+const LENS_PAD: f32 = 5.0;
+/// The height of the hex readout pill below the pixel grid.
+const LENS_PILL_HEIGHT: f32 = 20.0;
+/// The preferred gap between the cursor and the near corner of the lens.
+const LENS_CURSOR_MARGIN: f32 = 18.0;
 
 /// The active controls tab of the left pane (Qt `QTabWidget::currentTab`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,13 +148,15 @@ const VALUE_INPUTS_INDEX: usize = 3;
 /// Index of the "new swatch set" name input tree child.
 const NEW_SET_NAME_INDEX: usize = 10;
 
-/// The label and font for the cancel button of the overlay.
+/// The label and font for the eyedropper button of the overlay (replaces
+/// the former cancel button; the floating window keeps its header "x" as a
+/// cancel path).
 ///
 /// NOTE: the original `iced_aw` implementation uses glyphs from its embedded
 /// icon font (`font.ttf` via `iced_fonts`). We use plain text here so the
 /// widget needs no custom font - this is a customization point.
-fn cancel_icon() -> (&'static str, Font) {
-    ("Cancel", Font::default())
+fn dropper_icon() -> (&'static str, Font) {
+    ("Eyedropper", Font::default())
 }
 
 /// The label and font for the submit button of the overlay.
@@ -147,40 +168,50 @@ fn ok_icon() -> (&'static str, Font) {
     ("OK", Font::default())
 }
 
-/// Helper trait containing functions for positioning of nodes.
-///
-/// Ported from `iced_aw`'s `core::overlay::Position` trait.
-trait Position {
-    /// Centers this node around the given position. If the node is over the
-    /// specified bounds it's bouncing back to be fully visible on screen.
-    fn center_and_bounce(&mut self, position: Point, bounds: Size);
+/// The glyph for the close ("x") button of the
+/// [`ColorPickerWindow`] header.
+fn close_symbol() -> &'static str {
+    "\u{00D7}"
 }
 
-impl Position for Node {
-    fn center_and_bounce(&mut self, position: Point, bounds: Size) {
-        let size = self.size();
+/// Centers a dialog of the given `size` over `position` and bounces it back
+/// so it stays fully inside `bounds`.
+fn centered_bounded_point(position: Point, size: Size, bounds: Size) -> Point {
+    let x = (position.x - size.width / 2.0).max(0.0);
+    let y = (position.y - size.height / 2.0).max(0.0);
 
-        self.move_to_mut(Point::new(
-            (position.x - (size.width / 2.0)).max(0.0),
-            (position.y - (size.height / 2.0)).max(0.0),
-        ));
+    let x = if x + size.width > bounds.width {
+        (bounds.width - size.width).max(0.0)
+    } else {
+        x
+    };
+    let y = if y + size.height > bounds.height {
+        (bounds.height - size.height).max(0.0)
+    } else {
+        y
+    };
 
-        let new_self_bounds = self.bounds();
+    Point::new(x, y)
+}
 
-        self.move_to_mut(Point::new(
-            if new_self_bounds.x + new_self_bounds.width > bounds.width {
-                (new_self_bounds.x - (new_self_bounds.width - (bounds.width - new_self_bounds.x)))
-                    .max(0.0)
-            } else {
-                new_self_bounds.x
-            },
-            if new_self_bounds.y + new_self_bounds.height > bounds.height {
-                (new_self_bounds.y - (new_self_bounds.height - (bounds.height - new_self_bounds.y)))
-                    .max(0.0)
-            } else {
-                new_self_bounds.y
-            },
-        ));
+/// Linearly interpolates between two colors, clamping `t` to `0..=1`.
+fn lerp(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+/// The rectangle of the close ("x") button within the window `header`.
+fn close_button_rect(header: Rectangle) -> Rectangle {
+    Rectangle {
+        x: header.x + header.width - CLOSE_BUTTON_SIZE - 6.0,
+        y: header.y + (header.height - CLOSE_BUTTON_SIZE) / 2.0,
+        width: CLOSE_BUTTON_SIZE,
+        height: CLOSE_BUTTON_SIZE,
     }
 }
 
@@ -195,9 +226,44 @@ fn is_in_ring_band(position: Point, size: Size) -> bool {
     dist >= inner * inner && dist <= outer * outer
 }
 
-/// The number of grid rows that fit `count` cells in `cols` columns.
-fn grid_rows(count: usize, cols: usize) -> usize {
-    if count == 0 { 0 } else { count.div_ceil(cols) }
+/// The pitch of the strip cells: cell size plus spacing (used for both
+/// axes).
+const CELL_PITCH: f32 = SWATCH_SIZE + GRID_SPACING;
+/// The number of rows of the swatch/recent strips.
+const STRIP_ROWS: usize = 3;
+
+/// The number of columns that fit into a strip of the given width.
+fn visible_cols(width: f32) -> usize {
+    ((width - 2.0 * SWATCH_PAGE_MARGIN + GRID_SPACING) / CELL_PITCH)
+        .floor()
+        .max(1.0) as usize
+}
+
+/// The number of columns occupied by `count` cells flowing down
+/// [`STRIP_ROWS`] rows; at least one viewport worth of columns.
+fn strip_content_cols(count: usize, viewport_width: f32) -> usize {
+    count
+        .max(STRIP_ROWS * visible_cols(viewport_width))
+        .div_ceil(STRIP_ROWS)
+}
+
+/// The total width occupied by the columns of a strip with `count` cells.
+fn strip_content_width(count: usize, viewport_width: f32) -> f32 {
+    strip_content_cols(count, viewport_width) as f32 * CELL_PITCH - GRID_SPACING
+}
+
+/// The maximal scroll offset of a strip with `count` cells inside a
+/// viewport of the given width.
+fn strip_max_scroll(count: usize, viewport_width: f32) -> f32 {
+    (strip_content_width(count, viewport_width) + 2.0 * SWATCH_PAGE_MARGIN
+        - viewport_width)
+        .max(0.0)
+}
+
+/// Clamps a scroll offset against the content extent of a strip with
+/// `count` cells inside a viewport of the given width.
+fn clamp_strip_scroll(offset: f32, count: usize, viewport_width: f32) -> f32 {
+    offset.clamp(0.0, strip_max_scroll(count, viewport_width))
 }
 
 /// True if two colors have identical RGBA bytes.
@@ -274,32 +340,40 @@ fn swatch_close_bounds(tab: &Rectangle) -> Rectangle {
 }
 
 /// The sub-rects of the "new swatch set" prompt page:
-/// `(name input, Add button, Cancel button)`.
+/// `(name input, Add button, Cancel button)`. The controls form a
+/// horizontal band centered inside the page so the rest of the fixed
+/// strip height stays empty.
 fn name_prompt_rects(page: Rectangle) -> (Rectangle, Rectangle, Rectangle) {
     let button_width = 48.0;
     let gap = 8.0;
+    let y = page.y + (page.height - NAME_PROMPT_HEIGHT) / 2.0;
     let cancel = Rectangle {
         x: page.x + page.width - button_width,
-        y: page.y,
+        y,
         width: button_width,
-        height: page.height,
+        height: NAME_PROMPT_HEIGHT,
     };
     let add = Rectangle {
         x: cancel.x - gap - button_width,
-        y: page.y,
+        y,
         width: button_width,
-        height: page.height,
+        height: NAME_PROMPT_HEIGHT,
     };
     let input = Rectangle {
         x: page.x,
-        y: page.y,
+        y,
         width: add.x - gap - page.x,
-        height: page.height,
+        height: NAME_PROMPT_HEIGHT,
     };
     (input, add, cancel)
 }
 
-/// The overlay of the [`ColorPicker`](crate::color_picker::ColorPicker).
+/// The dialog content of the [`ColorPicker`](crate::color_picker::ColorPicker).
+///
+/// This is the shared core view used by both public entry points: it is
+/// planted as a regular widget by the inline [`ColorPicker`] and hosted
+/// inside a draggable window shell by
+/// [`FloatingColorPicker`](crate::color_picker::FloatingColorPicker).
 #[allow(missing_debug_implementations)]
 pub struct ColorPickerOverlay<'a, 'b, Message, Theme>
 where
@@ -309,8 +383,10 @@ where
 {
     /// The state of the [`ColorPickerOverlay`].
     state: &'a mut State,
-    /// The cancel button of the [`ColorPickerOverlay`].
-    cancel_button: Button<'a, Message, Theme, Renderer>,
+    /// The eyedropper button of the [`ColorPickerOverlay`]. Replaces the
+    /// former cancel button; the floating window keeps its header "x" as a
+    /// cancel path.
+    dropper_button: Button<'a, Message, Theme, Renderer>,
     /// The submit button of the [`ColorPickerOverlay`].
     submit_button: Button<'a, Message, Theme, Renderer>,
     /// The hex text input of the [`ColorPickerOverlay`].
@@ -323,16 +399,17 @@ where
     on_submit: &'a dyn Fn(Color) -> Message,
     /// Optional function that produces a message when the color changes during selection (real-time updates).
     on_color_change: Option<&'a dyn Fn(Color) -> Message>,
-    /// The position strategy of the [`ColorPickerOverlay`]; `None` centers
-    /// the dialog over the underlay.
-    position: Option<OverlayPosition>,
-    /// The bounds of the underlay widget, for parent-relative positions.
-    parent_bounds: Rectangle,
-    /// The underlay center, used as the anchor point when `position` is
-    /// [`None`] (the default behavior).
-    fallback_center: Point,
-    /// The last known cursor position, for cursor-following positions.
-    cursor_position: Point,
+    /// The shared buffer where the application deposits window screenshots
+    /// for the eye dropper. The eyedropper button is disabled while this is
+    /// `None`.
+    dropper_buffer: Option<&'a DropperBuffer>,
+    /// Optional function producing the message published when the user
+    /// activates the eye dropper and a fresh capture is needed.
+    on_dropper_capture: Option<&'a dyn Fn() -> Message>,
+    /// Whether the magnifier lens is drawn by this content view (`true`
+    /// for the floating window shell) or hosted in the inline widget's
+    /// full-window [`DropperLens`] overlay, which escapes ancestor clipping.
+    lens_in_content_draw: bool,
     /// The style of the [`ColorPickerOverlay`].
     class: &'a <Theme as style::Catalog>::Class<'b>,
     /// The reference to the tree holding the state of this overlay.
@@ -350,32 +427,28 @@ where
         + iced::widget::text_input::Catalog,
     'b: 'a,
 {
-    /// Creates a new [`ColorPickerOverlay`] at the given position strategy.
+    /// Creates a new [`ColorPickerOverlay`] dialog content view.
     ///
-    /// A [`None`] position centers the dialog over `fallback_center` and
-    /// bounces it back into the viewport; a [`Some`] position resolves like
-    /// the [`OverlayManager`](crate::overlay::OverlayManager) and is clamped
-    /// to the viewport.
+    /// The content is laid out relative to its host; positioning is the
+    /// responsibility of whoever plants it (the inline widget or the
+    /// [`ColorPickerWindow`] shell).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        state: &'a mut WidgetState,
+        state: &'a mut State,
         on_cancel: Message,
         on_submit: &'a dyn Fn(Color) -> Message,
         on_color_change: Option<&'a dyn Fn(Color) -> Message>,
-        position: Option<OverlayPosition>,
-        parent_bounds: Rectangle,
-        fallback_center: Point,
-        cursor_position: Point,
+        dropper_buffer: Option<&'a DropperBuffer>,
+        on_dropper_capture: Option<&'a dyn Fn() -> Message>,
+        lens_in_content_draw: bool,
         class: &'a <Theme as style::Catalog>::Class<'b>,
         tree: &'a mut Tree,
         viewport: Rectangle,
     ) -> Self {
-        let WidgetState { overlay_state, .. } = state;
-
-        let (cancel_content, cancel_font) = cancel_icon();
+        let (dropper_content, dropper_font) = dropper_icon();
         let (submit_content, submit_font) = ok_icon();
 
-        let state_ptr: *mut State = overlay_state;
+        let state_ptr: *mut State = state;
         let hex_fake = on_cancel.clone();
         let hex_input = TextInput::new("", unsafe { &(*state_ptr).hex_input })
             .padding([4, 8])
@@ -420,15 +493,22 @@ where
             .on_submit(name_fake);
 
         ColorPickerOverlay {
-            state: overlay_state,
-            cancel_button: Button::new(
-                widget::Text::new(cancel_content)
+            state,
+            // The eyedropper button publishes a fake message (intercepted
+            // below, submit_button pattern) that triggers the capture
+            // round-trip. Without a wired buffer the button stays disabled.
+            dropper_button: Button::new(
+                widget::Text::new(dropper_content)
                     .align_x(Horizontal::Center)
                     .width(Length::Fill)
-                    .font(cancel_font),
+                    .font(dropper_font),
             )
             .width(Length::Fill)
-            .on_press(on_cancel.clone()),
+            .on_press_maybe(
+                dropper_buffer
+                    .is_some()
+                    .then_some(on_cancel.clone()),
+            ),
             submit_button: Button::new(
                 widget::Text::new(submit_content)
                     .align_x(Horizontal::Center)
@@ -442,20 +522,13 @@ where
             new_set_name_input: name_input,
             on_submit,
             on_color_change,
-            position,
-            parent_bounds,
-            fallback_center,
-            cursor_position,
+            dropper_buffer,
+            on_dropper_capture,
+            lens_in_content_draw,
             class,
             tree,
             viewport,
         }
-    }
-
-    /// Turn this [`ColorPickerOverlay`] into an overlay [`Element`](overlay::Element).
-    #[must_use]
-    pub fn overlay(self) -> overlay::Element<'a, Message, Theme, Renderer> {
-        overlay::Element::new(Box::new(self))
     }
 
     /// Force redraw all components if the internal state was changed
@@ -1092,6 +1165,20 @@ where
                             _ => event::Status::Ignored,
                         };
                     }
+                    Focus::Dropper => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                            ) => {
+                                if self.request_dropper_capture(shell) {
+                                    event::Status::Captured
+                                } else {
+                                    event::Status::Ignored
+                                }
+                            }
+                            _ => event::Status::Ignored,
+                        };
+                    }
                     Focus::Swatches => {
                         let set_len = self
                             .state
@@ -1120,26 +1207,46 @@ where
                                     event::Status::Ignored
                                 }
                             }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft
-                            | keyboard::key::Named::ArrowRight
-                            | keyboard::key::Named::ArrowUp
-                            | keyboard::key::Named::ArrowDown) => {
+                            // Cells flow down [`STRIP_ROWS`] rows: up/down
+                            // move within a column, left/right across
+                            // columns.
+                            keyboard::Key::Named(
+                                keyboard::key::Named::ArrowLeft
+                                | keyboard::key::Named::ArrowRight
+                                | keyboard::key::Named::ArrowUp
+                                | keyboard::key::Named::ArrowDown,
+                            ) => {
                                 if set_len > 0 {
                                     let delta = match key {
                                         keyboard::Key::Named(
                                             keyboard::key::Named::ArrowLeft,
-                                        ) => -1,
+                                        ) => -(STRIP_ROWS as i32),
                                         keyboard::Key::Named(
                                             keyboard::key::Named::ArrowRight,
-                                        ) => 1,
-                                        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-                                            -(GRID_COLS as i32)
-                                        }
-                                        _ => GRID_COLS as i32,
+                                        ) => STRIP_ROWS as i32,
+                                        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => -1,
+                                        _ => 1,
                                     };
                                     idx = (idx as i32 + delta).clamp(0, set_len as i32 - 1) as usize;
                                     self.state.focused_swatch =
                                         Some((self.state.active_swatch_tab, idx));
+
+                                    // Scroll the focused cell's column fully
+                                    // into view.
+                                    let start = (idx / STRIP_ROWS) as f32 * CELL_PITCH
+                                        - self.state.swatch_scroll_x;
+                                    let end = start + SWATCH_SIZE;
+                                    let view = RIGHT_PANE_WIDTH - 2.0 * SWATCH_PAGE_MARGIN;
+                                    if start < 0.0 {
+                                        self.state.swatch_scroll_x += start;
+                                    } else if end > view {
+                                        self.state.swatch_scroll_x += end - view;
+                                    }
+                                    self.state.swatch_scroll_x = clamp_strip_scroll(
+                                        self.state.swatch_scroll_x,
+                                        set_len,
+                                        RIGHT_PANE_WIDTH,
+                                    );
                                     event::Status::Captured
                                 } else {
                                     event::Status::Ignored
@@ -1480,17 +1587,21 @@ where
                 return true;
             }
 
-            // Grid cells of the active set.
-            for (i, cell) in page_layout.children().enumerate() {
-                if cursor.is_over(cell.bounds())
-                    && let Some(color) = self
-                        .state
-                        .swatch_sets
-                        .get(self.state.active_swatch_tab)
-                        .and_then(|set| set.colors.get(i))
-                {
-                    self.select_color_from_swatch(*color, shell);
-                    return true;
+            // Strip cells of the active set; scrolled-out parts are not
+            // clickable.
+            let page_bounds = page_layout.bounds();
+            if let Some(position) = cursor.position_in(page_bounds) {
+                for (i, cell) in page_layout.children().enumerate() {
+                    if cell.bounds().contains(position)
+                        && let Some(color) = self
+                            .state
+                            .swatch_sets
+                            .get(self.state.active_swatch_tab)
+                            .and_then(|set| set.colors.get(i))
+                    {
+                        self.select_color_from_swatch(*color, shell);
+                        return true;
+                    }
                 }
             }
 
@@ -1546,8 +1657,7 @@ where
     }
 }
 
-impl<'a, Message, Theme> Overlay<Message, Theme, Renderer>
-    for ColorPickerOverlay<'a, '_, Message, Theme>
+impl<'a, Message, Theme> ColorPickerOverlay<'a, '_, Message, Theme>
 where
     Message: 'static + Clone,
     Theme: 'a
@@ -1556,7 +1666,12 @@ where
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
 {
-    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
+    /// Lays out the dialog content at the origin of the available `bounds`.
+    ///
+    /// Positioning is left to the caller: the inline widget lets it flow in
+    /// the layout tree, while the [`ColorPickerWindow`] shell resolves its
+    /// position strategy and applies the user drag offset.
+    pub(crate) fn layout_content(&mut self, renderer: &Renderer, bounds: Size) -> Node {
         let limits = Limits::new(Size::ZERO, bounds)
             .shrink(Size::new(OUTER_MARGIN, OUTER_MARGIN))
             .width(Length::Fill)
@@ -1598,27 +1713,11 @@ where
             block2_node.size().height.max(block1_node.size().height),
         );
 
-        let mut node =
-            Node::with_children(Size::new(width, height), vec![block1_node, block2_node]);
-
-        if let Some(position) = self.position {
-            let viewport = Rectangle::with_size(bounds);
-            let content = Rectangle::new(Point::ORIGIN, node.size());
-            let point = position.resolve(
-                self.parent_bounds,
-                self.cursor_position,
-                viewport,
-                content,
-                &[],
-            );
-            node.move_to_mut(clamp_to_viewport(point, node.size(), viewport));
-        } else {
-            node.center_and_bounce(self.fallback_center, bounds);
-        }
-        node
+        Node::with_children(Size::new(width, height), vec![block1_node, block2_node])
     }
 
-    fn update(
+    /// The event handling of the dialog content.
+    pub(crate) fn update_content(
         &mut self,
         event: &Event,
         layout: Layout<'_>,
@@ -1627,6 +1726,19 @@ where
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<Message>,
     ) {
+        // --- Eye dropper ------------------------------------------------
+        // Pick up a freshly captured frame and, while the dropper is
+        // active, swallow every other interaction so the frozen snapshot
+        // stays consistent and nothing beneath reacts.
+        if self.poll_dropper() {
+            shell.request_redraw();
+        }
+        if self.state.dropper_mode != DropperMode::Idle {
+            self.on_event_dropper(event, cursor, shell);
+            shell.capture_event();
+            return;
+        }
+
         // Refresh the TextInput focus bookkeeping from the widget tree.
         self.state.hex_focused = self.text_input_internal_focus(HEX_INPUT_INDEX);
         self.state.value_focus = None;
@@ -1700,9 +1812,9 @@ where
         let _reset_button_layout = buttons_layout
             .next()
             .expect("widget: Layout should have a reset button layout");
-        let cancel_button_layout = buttons_layout
+        let dropper_button_layout = buttons_layout
             .next()
-            .expect("widget: Layout should have a cancel button layout for a ColorPicker");
+            .expect("widget: Layout should have an eyedropper button layout for a ColorPicker");
         let submit_button_layout = buttons_layout
             .next()
             .expect("widget: Layout should have a submit button layout for a ColorPicker");
@@ -1912,19 +2024,61 @@ where
             captured = true;
         }
 
+        // Horizontal wheel scrolling of the swatch and recent strips. The
+        // wheel is only consumed when the strip actually overflows.
+        if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event {
+            let dy = match *delta {
+                mouse::ScrollDelta::Lines { y, .. } => y * CELL_PITCH,
+                mouse::ScrollDelta::Pixels { y, .. } => y,
+            };
+
+            let page_bounds = swatch_page_layout.bounds();
+            if !self.state.naming_new_set && cursor.is_over(page_bounds) {
+                let count = self
+                    .state
+                    .swatch_sets
+                    .get(self.state.active_swatch_tab)
+                    .map_or(0, |set| set.colors.len());
+                let old = clamp_strip_scroll(self.state.swatch_scroll_x, count, page_bounds.width);
+                let new = clamp_strip_scroll(old + dy, count, page_bounds.width);
+                if (new - old).abs() > f32::EPSILON {
+                    self.state.swatch_scroll_x = new;
+                    shell.invalidate_layout();
+                    captured = true;
+                }
+            }
+
+            let recent_bounds = recent_grid_layout.bounds();
+            if cursor.is_over(recent_bounds) {
+                let count = self.state.recent_colors.len();
+                let old =
+                    clamp_strip_scroll(self.state.recent_scroll_x, count, recent_bounds.width);
+                let new = clamp_strip_scroll(old + dy, count, recent_bounds.width);
+                if (new - old).abs() > f32::EPSILON {
+                    self.state.recent_scroll_x = new;
+                    shell.invalidate_layout();
+                    captured = true;
+                }
+            }
+        }
+
         // Clicking a recent color selects it.
         if matches!(
             event,
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 | Event::Touch(touch::Event::FingerPressed { .. })
         ) {
-            for (i, cell) in recent_grid_layout.children().enumerate() {
-                if cursor.is_over(cell.bounds())
-                    && let Some(color) = self.state.recent_colors.get(i)
-                {
-                    self.select_color_from_swatch(*color, shell);
-                    captured = true;
-                    break;
+            // Scrolled-out parts of the strip are not clickable.
+            let viewport = recent_grid_layout.bounds();
+            if let Some(position) = cursor.position_in(viewport) {
+                for (i, cell) in recent_grid_layout.children().enumerate() {
+                    if cell.bounds().contains(position)
+                        && let Some(color) = self.state.recent_colors.get(i)
+                    {
+                        self.select_color_from_swatch(*color, shell);
+                        captured = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1936,8 +2090,8 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                if cursor.is_over(cancel_button_layout.bounds()) {
-                    self.state.cancel_pressed = true;
+                if cursor.is_over(dropper_button_layout.bounds()) {
+                    self.state.dropper_pressed = true;
                 }
                 if cursor.is_over(submit_button_layout.bounds()) {
                     self.state.submit_pressed = true;
@@ -1948,7 +2102,7 @@ where
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. }) => {
-                self.state.cancel_pressed = false;
+                self.state.dropper_pressed = false;
                 self.state.submit_pressed = false;
                 // Releasing inside the Reset button resets the color to the
                 // initial one (Qt behavior: the dialog stays open).
@@ -1966,16 +2120,25 @@ where
             _ => {}
         }
 
-        self.cancel_button.update(
+        // The eyedropper button publishes a fake message (submit_button
+        // pattern); a non-empty list means it was pressed and the capture
+        // round-trip should start.
+        let mut dropper_messages: Vec<Message> = Vec::new();
+        self.dropper_button.update(
             &mut self.tree.children[0],
             event,
-            cancel_button_layout,
+            dropper_button_layout,
             cursor,
             renderer,
             clipboard,
-            shell,
+            &mut Shell::new(&mut dropper_messages),
             &layout.bounds(),
         );
+
+        if !dropper_messages.is_empty() && self.request_dropper_capture(shell) {
+            shell.capture_event();
+            shell.request_redraw();
+        }
 
         self.submit_button.update(
             &mut self.tree.children[1],
@@ -2003,12 +2166,159 @@ where
         }
     }
 
-    fn mouse_interaction(
+    /// Transitions the eye dropper from [`DropperMode::Waiting`] to
+    /// [`DropperMode::Picking`] when the application has deposited a fresh
+    /// frame into the shared [`DropperBuffer`].
+    ///
+    /// Returns `true` on the transition, so the caller can request a redraw.
+    fn poll_dropper(&mut self) -> bool {
+        if self.state.dropper_mode != DropperMode::Waiting {
+            return false;
+        }
+
+        let Some(frame) = self.dropper_buffer.and_then(DropperBuffer::take) else {
+            return false;
+        };
+
+        self.state.dropper_frame = Some(frame);
+        self.state.dropper_mode = DropperMode::Picking;
+        true
+    }
+
+    /// Starts the capture round-trip: clears any stale frame, enters
+    /// [`DropperMode::Waiting`] and publishes the application's capture
+    /// request message. Returns `false` when no buffer is wired (the button
+    /// is disabled).
+    fn request_dropper_capture(&mut self, shell: &mut Shell<Message>) -> bool {
+        let Some(buffer) = self.dropper_buffer else {
+            return false;
+        };
+
+        buffer.clear();
+        self.state.dropper_mode = DropperMode::Waiting;
+        self.state.dropper_frame = None;
+
+        if let Some(on_dropper_capture) = self.on_dropper_capture {
+            shell.publish(on_dropper_capture());
+        }
+
+        true
+    }
+
+    /// Leaves picking mode without changing the selection.
+    fn exit_dropper(&mut self) {
+        self.state.dropper_mode = DropperMode::Idle;
+        self.state.dropper_frame = None;
+    }
+
+    /// Applies the sampled pixel color to the dialog and leaves picking
+    /// mode.
+    fn commit_dropper(&mut self, shell: &mut Shell<Message>) {
+        let sampled = self.state.dropper_frame.as_ref().and_then(|frame| {
+            frame.sample(self.state.dropper_cursor.x, self.state.dropper_cursor.y)
+        });
+
+        if let Some(color) = sampled {
+            self.state.apply_color(color);
+            self.state.sync_display();
+            self.state.clear_cache();
+            if let Some(on_color_change) = self.on_color_change {
+                shell.publish(on_color_change(color));
+            }
+        }
+
+        self.exit_dropper();
+    }
+
+    /// The event handling while the eye dropper is active. The cursor
+    /// tracks the magnifier lens; left click / Enter commit the hovered
+    /// pixel, right click / Escape abort without changes and the arrow keys
+    /// nudge the hovered pixel by one screen pixel.
+    fn on_event_dropper(
+        &mut self,
+        event: &Event,
+        _cursor: Cursor,
+        shell: &mut Shell<Message>,
+    ) {
+        match event {
+            Event::Mouse(mouse::Event::CursorMoved { position })
+            | Event::Touch(touch::Event::FingerMoved { position, .. }) => {
+                self.state.dropper_cursor = *position;
+                shell.request_redraw();
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                if let Event::Touch(touch::Event::FingerPressed { position, .. }) = event {
+                    self.state.dropper_cursor = *position;
+                }
+                self.commit_dropper(shell);
+                shell.request_redraw();
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                self.exit_dropper();
+                shell.request_redraw();
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
+                keyboard::Key::Named(
+                    keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                ) => {
+                    self.commit_dropper(shell);
+                    shell.request_redraw();
+                }
+                keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                    self.exit_dropper();
+                    shell.request_redraw();
+                }
+                keyboard::Key::Named(
+                    keyboard::key::Named::ArrowLeft
+                    | keyboard::key::Named::ArrowRight
+                    | keyboard::key::Named::ArrowUp
+                    | keyboard::key::Named::ArrowDown,
+                ) => {
+                    // Nudge by one physical pixel: convert the frame's
+                    // scale factor into logical units.
+                    let step = 1.0 / self
+                        .state
+                        .dropper_frame
+                        .as_ref()
+                        .map(|frame| frame.scale_factor.max(1.0))
+                        .unwrap_or(1.0);
+                    let hovered = &mut self.state.dropper_cursor;
+                    match key {
+                        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                            hovered.x -= step;
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                            hovered.x += step;
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                            hovered.y -= step;
+                        }
+                        _ => {
+                            hovered.y += step;
+                        }
+                    }
+                    shell.request_redraw();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// The mouse interaction of the dialog content.
+    pub(crate) fn mouse_interaction_content(
         &self,
         layout: Layout<'_>,
         cursor: Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        // While the eye dropper is active the whole dialog acts as a
+        // crosshair sampling surface.
+        if self.state.dropper_mode != DropperMode::Idle {
+            return mouse::Interaction::Crosshair;
+        }
+
         let mut children = layout.children();
 
         let mouse_interaction = mouse::Interaction::default();
@@ -2132,8 +2442,17 @@ where
             block2_mouse_interaction =
                 block2_mouse_interaction.max(mouse::Interaction::Pointer);
         }
-        for cell in swatch_page_layout.children() {
-            if cursor.is_over(cell.bounds()) {
+        // Only real strip cells (not placeholder wells) are interactive.
+        let active_set_cells = if self.state.naming_new_set {
+            0
+        } else {
+            self.state
+                .swatch_sets
+                .get(self.state.active_swatch_tab)
+                .map_or(0, |set| set.colors.len())
+        };
+        for (i, cell) in swatch_page_layout.children().enumerate() {
+            if i < active_set_cells && cursor.is_over(cell.bounds()) {
                 block2_mouse_interaction =
                     block2_mouse_interaction.max(mouse::Interaction::Pointer);
             }
@@ -2151,8 +2470,9 @@ where
         let recent_grid_layout = block2_children
             .next()
             .expect("Graphics: Layout should have a recent grid layout");
-        for cell in recent_grid_layout.children() {
-            if cursor.is_over(cell.bounds()) {
+        let recent_cells = self.state.recent_colors.len();
+        for (i, cell) in recent_grid_layout.children().enumerate() {
+            if i < recent_cells && cursor.is_over(cell.bounds()) {
                 block2_mouse_interaction =
                     block2_mouse_interaction.max(mouse::Interaction::Pointer);
             }
@@ -2165,12 +2485,12 @@ where
         let _reset_button_layout = buttons_layout
             .next()
             .expect("Graphics: Layout should have a reset button layout");
-        let cancel_button_layout = buttons_layout
+        let dropper_button_layout = buttons_layout
             .next()
-            .expect("Graphics: Layout should have a cancel button layout for a ColorPicker");
-        let cancel_mouse_interaction = self.cancel_button.mouse_interaction(
-            &self.tree.children[1],
-            cancel_button_layout,
+            .expect("Graphics: Layout should have an eyedropper button layout for a ColorPicker");
+        let dropper_mouse_interaction = self.dropper_button.mouse_interaction(
+            &self.tree.children[0],
+            dropper_button_layout,
             cursor,
             &self.viewport,
             renderer,
@@ -2190,11 +2510,12 @@ where
         mouse_interaction
             .max(block1_mouse_interaction)
             .max(block2_mouse_interaction)
-            .max(cancel_mouse_interaction)
+            .max(dropper_mouse_interaction)
             .max(submit_mouse_interaction)
     }
 
-    fn operate(
+    /// The operation support of the dialog content.
+    pub(crate) fn operate_content(
         &mut self,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -2224,11 +2545,11 @@ where
                 let mut button_children = buttons_layout.children();
                 let _reset_layout = button_children.next();
 
-                if let Some(cancel_layout) = button_children.next() {
+                if let Some(dropper_layout) = button_children.next() {
                     Widget::operate(
-                        &mut self.cancel_button,
+                        &mut self.dropper_button,
                         &mut self.tree.children[0],
-                        cancel_layout,
+                        dropper_layout,
                         renderer,
                         operation,
                     );
@@ -2247,7 +2568,8 @@ where
         }
     }
 
-    fn draw(
+    /// Draws the dialog content.
+    pub(crate) fn draw_content(
         &self,
         renderer: &mut Renderer,
         theme: &Theme,
@@ -2326,8 +2648,523 @@ where
             style,
             &style_sheet,
         );
+
+        // Eye dropper magnifier lens for the floating window shell, drawn
+        // last so it floats above every dialog element. The inline widget
+        // hosts its lens in a dedicated full-window overlay instead (see
+        // [`DropperLens`]), since content drawing is clipped by ancestors.
+        if self.lens_in_content_draw
+            && self.state.dropper_mode == DropperMode::Picking
+            && let Some(frame) = &self.state.dropper_frame
+        {
+            let clamp_bounds = if self.viewport.width > 0.0 && self.viewport.height > 0.0 {
+                self.viewport
+            } else {
+                bounds
+            };
+            draw_dropper_lens(
+                renderer,
+                frame,
+                self.state.dropper_cursor,
+                clamp_bounds,
+                &style_sheet[&StyleState::Active],
+            );
+        }
     }
 }
+
+/// A full-window overlay rendering the eye dropper magnifier lens for the
+/// inline [`ColorPicker`](crate::color_picker::ColorPicker).
+///
+/// Content drawing is clipped by ancestors (scrollables, containers); this
+/// overlay is laid out against the whole window, so the lens can follow the
+/// cursor across the entire application window instead of being confined to
+/// the picker's own bounds. It is purely visual: events are handled by the
+/// dialog content as usual.
+#[allow(missing_debug_implementations)]
+pub(crate) struct DropperLens<'a, 'b, Theme>
+where
+    Theme: style::Catalog,
+{
+    /// The frozen snapshot being sampled.
+    frame: &'a Frame,
+    /// The hovered point (window coordinates, logical pixels).
+    cursor: Point,
+    /// The area of the window the lens is clamped to; captured during
+    /// `layout`.
+    clamp_bounds: Rectangle,
+    /// The style class of the hosting picker.
+    class: &'a <Theme as style::Catalog>::Class<'b>,
+}
+
+impl<'a, 'b, Theme> DropperLens<'a, 'b, Theme>
+where
+    Theme: style::Catalog + 'a,
+    'b: 'a,
+{
+    /// Creates a new lens overlay for the given frozen snapshot and hovered
+    /// point.
+    pub(crate) fn new(
+        frame: &'a Frame,
+        cursor: Point,
+        class: &'a <Theme as style::Catalog>::Class<'b>,
+    ) -> Self {
+        Self {
+            frame,
+            cursor,
+            clamp_bounds: Rectangle::default(),
+            class,
+        }
+    }
+
+    /// Turns this lens into an overlay [`Element`](overlay::Element).
+    pub(crate) fn overlay<Message>(self) -> overlay::Element<'a, Message, Theme, Renderer>
+    where
+        Message: Clone,
+    {
+        overlay::Element::new(Box::new(self))
+    }
+}
+
+impl<'a, 'b, Message, Theme> overlay::Overlay<Message, Theme, Renderer>
+    for DropperLens<'a, 'b, Theme>
+where
+    Message: Clone,
+    Theme: style::Catalog + 'a,
+    'b: 'a,
+{
+    fn layout(&mut self, _renderer: &Renderer, bounds: Size) -> Node {
+        // Remember the full window extents for drawing; the anchor itself
+        // is a zero-size node at the origin so it never affects layout.
+        self.clamp_bounds = Rectangle::with_size(bounds);
+        Node::new(Size::ZERO)
+    }
+
+    fn update(
+        &mut self,
+        _event: &Event,
+        _layout: Layout<'_>,
+        _cursor: Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        _shell: &mut Shell<Message>,
+    ) {
+    }
+
+    fn mouse_interaction(
+        &self,
+        _layout: Layout<'_>,
+        _cursor: Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        // Crosshair over the whole window while picking. Reporting a
+        // non-default interaction also keeps the underlying UI unhovered.
+        mouse::Interaction::Crosshair
+    }
+
+    fn draw(&self, renderer: &mut Renderer, theme: &Theme, _style: &renderer::Style, _layout: Layout<'_>, _cursor: Cursor) {
+        let style = style::Catalog::style(theme, self.class, Status::Active);
+        draw_dropper_lens(renderer, self.frame, self.cursor, self.clamp_bounds, &style);
+    }
+}
+
+/// A free-floating, window-like shell hosting the color picker dialog.
+///
+/// It is a regular overlay (still a widget inside the iced tree, not an OS
+/// window): a draggable header strip with an empty drag area and a close
+/// ("x") button on top of the dialog content. The dialog can be dragged
+/// anywhere inside the viewport by its header; the dragged position is kept
+/// in [`State`] and survives close/reopen. Spawning one is the job of
+/// [`FloatingColorPicker`](crate::color_picker::FloatingColorPicker).
+#[allow(missing_debug_implementations)]
+pub struct ColorPickerWindow<'a, 'b, Message, Theme>
+where
+    Message: Clone,
+    Theme: style::Catalog + iced::widget::button::Catalog + iced::widget::text_input::Catalog,
+{
+    /// The dialog content hosted below the header.
+    content: ColorPickerOverlay<'a, 'b, Message, Theme>,
+    /// The message published when the header close ("x") button is pressed.
+    on_close: Message,
+    /// The initial position strategy; dragging overrides it afterwards.
+    position: Option<OverlayPosition>,
+    /// The bounds of the underlay widget, for parent-relative positions.
+    parent_bounds: Rectangle,
+    /// The underlay center, used as the anchor point when `position` is
+    /// [`None`] (the default behavior).
+    fallback_center: Point,
+    /// The last known cursor position, for cursor-following positions.
+    cursor_position: Point,
+}
+impl<'a, 'b, Message, Theme> ColorPickerWindow<'a, 'b, Message, Theme>
+where
+    Message: 'static + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+    'b: 'a,
+{
+    /// Creates a new [`ColorPickerWindow`] at the given position strategy.
+    ///
+    /// A [`None`] position centers the window over `fallback_center` and
+    /// bounces it back into the viewport; a [`Some`] position resolves like
+    /// the [`OverlayManager`](crate::overlay::OverlayManager) and is clamped
+    /// to the viewport. Either way the position is only used until the user
+    /// drags the window by its header; afterwards the dragged spot wins and
+    /// survives close/reopen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        state: &'a mut State,
+        on_cancel: Message,
+        on_submit: &'a dyn Fn(Color) -> Message,
+        on_color_change: Option<&'a dyn Fn(Color) -> Message>,
+        dropper_buffer: Option<&'a DropperBuffer>,
+        on_dropper_capture: Option<&'a dyn Fn() -> Message>,
+        position: Option<OverlayPosition>,
+        parent_bounds: Rectangle,
+        fallback_center: Point,
+        cursor_position: Point,
+        class: &'a <Theme as style::Catalog>::Class<'b>,
+        tree: &'a mut Tree,
+        viewport: Rectangle,
+    ) -> Self {
+        Self {
+            content: ColorPickerOverlay::new(
+                state,
+                on_cancel.clone(),
+                on_submit,
+                on_color_change,
+                dropper_buffer,
+                on_dropper_capture,
+                true,
+                class,
+                tree,
+                viewport,
+            ),
+            on_close: on_cancel,
+            position,
+            parent_bounds,
+            fallback_center,
+            cursor_position,
+        }
+    }
+
+    /// Turn this [`ColorPickerWindow`] into an overlay [`Element`](overlay::Element).
+    #[must_use]
+    pub fn overlay(self) -> overlay::Element<'a, Message, Theme, Renderer> {
+        overlay::Element::new(Box::new(self))
+    }
+
+    /// The base (first-open) origin of the window for its current `size`.
+    fn base_position(&self, size: Size, bounds: Size) -> Point {
+        match self.position {
+            Some(position) => {
+                let viewport = Rectangle::with_size(bounds);
+                let point = position.resolve(
+                    self.parent_bounds,
+                    self.cursor_position,
+                    viewport,
+                    Rectangle::new(Point::ORIGIN, size),
+                    &[],
+                );
+                clamp_to_viewport(point, size, viewport)
+            }
+            None => centered_bounded_point(self.fallback_center, size, bounds),
+        }
+    }
+
+    /// Whether the window header is currently being dragged.
+    fn is_dragging(&self) -> bool {
+        self.content.state.header_drag_offset.is_some()
+    }
+}
+
+impl<'a, Message, Theme> Overlay<Message, Theme, Renderer>
+    for ColorPickerWindow<'a, '_, Message, Theme>
+where
+    Message: 'static + Clone,
+    Theme: 'a
+        + style::Catalog
+        + iced::widget::button::Catalog
+        + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
+        let viewport = Rectangle::with_size(bounds);
+
+        // Dialog content below the header strip.
+        let available = Size::new(
+            bounds.width,
+            (bounds.height - HEADER_HEIGHT).max(0.0),
+        );
+        let content_node = self.content.layout_content(renderer, available);
+
+        let width = content_node.size().width.max(CLOSE_BUTTON_SIZE + 12.0);
+        let total = Size::new(width, HEADER_HEIGHT + content_node.size().height);
+
+        // Header: empty drag strip with a reserved slot for the close
+        // button (drawn and hit-tested manually from this rect).
+        let close_slot =
+            close_button_rect(Rectangle::new(Point::ORIGIN, Size::new(width, HEADER_HEIGHT)));
+        let header_node = Node::with_children(
+            Size::new(width, HEADER_HEIGHT),
+            vec![Node::with_children(
+                Size::new(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
+                Vec::new(),
+            )
+            .move_to(close_slot.position())],
+        );
+
+        let mut node = Node::with_children(
+            total,
+            vec![
+                header_node,
+                content_node.move_to(Point::new(0.0, HEADER_HEIGHT)),
+            ],
+        );
+
+        // First open resolves the configured base position; afterwards the
+        // persisted (user-dragged) position wins. Clamped every frame so a
+        // resized viewport keeps the window fully visible.
+        let base = self.base_position(total, bounds);
+        let origin = self.content.state.dialog_position.unwrap_or(base);
+        let clamped = clamp_to_viewport(origin, total, viewport);
+        node.move_to_mut(clamped);
+        self.content.state.dialog_position = Some(clamped);
+
+        node
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<Message>,
+    ) {
+        let mut children = layout.children();
+        let _header_layout = children
+            .next()
+            .expect("widget: Layout should have a header layout");
+        let content_layout = children
+            .next()
+            .expect("widget: Layout should have a content layout");
+
+        // Forward to the dialog content first; the header sits above it
+        // spatially so the two hit-test areas are disjoint.
+        self.content.update_content(
+            event, content_layout, cursor, renderer, clipboard, shell,
+        );
+
+        let dialog_bounds = layout.bounds();
+        let header_rect = Rectangle::new(
+            dialog_bounds.position(),
+            Size::new(dialog_bounds.width, HEADER_HEIGHT),
+        );
+        let close_rect = close_button_rect(header_rect);
+
+        let on_close = self.on_close.clone();
+
+        // Window chrome interactions: dragging by the header and the close
+        // ("x") button. Mirrors the `ColorBarDragged` press/move/release
+        // idiom used by the color controls.
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                if cursor.is_over(close_rect) {
+                    self.content.state.close_pressed = true;
+                    shell.capture_event();
+                } else if cursor.is_over(header_rect)
+                    && let Some(grab) = cursor.land().position()
+                {
+                    self.content.state.header_drag_offset =
+                        Some(grab - dialog_bounds.position());
+                    shell.capture_event();
+                    shell.request_redraw();
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(
+                touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. },
+            ) => {
+                self.content.state.header_drag_offset = None;
+                let was_pressed = self.content.state.close_pressed;
+                self.content.state.close_pressed = false;
+                if was_pressed && cursor.is_over(close_rect) {
+                    shell.publish(on_close);
+                    shell.capture_event();
+                    shell.request_redraw();
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(offset) = self.content.state.header_drag_offset
+            && let Some(grab) = cursor.land().position()
+            && matches!(
+                event,
+                Event::Mouse(mouse::Event::CursorMoved { .. })
+                    | Event::Touch(touch::Event::FingerMoved { .. })
+            )
+        {
+            let desired = grab - offset;
+            let clamped = clamp_to_viewport(desired, dialog_bounds.size(), self.content.viewport);
+            self.content.state.dialog_position = Some(clamped);
+            shell.capture_event();
+            shell.request_redraw();
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let mut children = layout.children();
+        let _header_layout = children
+            .next()
+            .expect("Graphics: Layout should have a header layout");
+        let content_layout = children
+            .next()
+            .expect("Graphics: Layout should have a content layout");
+
+        let mut interaction = self
+            .content
+            .mouse_interaction_content(content_layout, cursor, renderer);
+
+        let header_rect = Rectangle::new(
+            layout.bounds().position(),
+            Size::new(layout.bounds().width, HEADER_HEIGHT),
+        );
+        let close_rect = close_button_rect(header_rect);
+
+        if cursor.is_over(close_rect) {
+            interaction = interaction.max(mouse::Interaction::Pointer);
+        } else if cursor.is_over(header_rect) || self.is_dragging() {
+            interaction = interaction.max(mouse::Interaction::Grabbing);
+        }
+
+        interaction
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        let mut children = layout.children();
+        let _header_layout = children.next();
+        if let Some(content_layout) = children.next() {
+            self.content.operate_content(content_layout, renderer, operation);
+        }
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: Cursor,
+    ) {
+        let mut children = layout.children();
+        let header_layout = children
+            .next()
+            .expect("Graphics: Layout should have a header layout");
+        let content_layout = children
+            .next()
+            .expect("Graphics: Layout should have a content layout");
+
+        let active = style::Catalog::style(theme, self.content.class, Status::Active);
+
+        // Header background with rounded top corners matching the dialog.
+        let header_bounds = header_layout.bounds();
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: header_bounds,
+                border: Border {
+                    radius: Radius {
+                        top_left: active.border_radius,
+                        top_right: active.border_radius,
+                        bottom_left: 0.0,
+                        bottom_right: 0.0,
+                    },
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..renderer::Quad::default()
+            },
+            active.header_background,
+        );
+
+        // Divider line under the header.
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(
+                    Point::new(header_bounds.x, header_bounds.y + header_bounds.height - 1.0),
+                    Size::new(header_bounds.width, 1.0),
+                ),
+                ..renderer::Quad::default()
+            },
+            active.header_border_color,
+        );
+
+        // Close ("x") button.
+        let close_rect = close_button_rect(header_bounds);
+        let hovered = cursor.is_over(close_rect);
+        let pressed = self.content.state.close_pressed;
+        let close_background = if pressed {
+            active.close_button_hover_background
+        } else if hovered {
+            lerp(active.close_button_background, active.close_button_hover_background, 0.6)
+        } else {
+            active.close_button_background
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: close_rect,
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: active.close_button_border_color,
+                },
+                ..renderer::Quad::default()
+            },
+            close_background,
+        );
+        renderer.fill_text(
+            Text {
+                content: close_symbol().to_owned(),
+                bounds: close_rect.size(),
+                size: Pixels(14.0),
+                font: Font::default(),
+                align_x: text::Alignment::Center,
+                align_y: Vertical::Center,
+                line_height: text::LineHeight::Relative(1.0),
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            },
+            close_rect.center(),
+            if hovered || pressed {
+                active.text_primary
+            } else {
+                active.close_symbol_color
+            },
+            close_rect,
+        );
+
+        self.content.draw_content(
+            renderer, theme, style, content_layout, cursor,
+        );
+    }
+}
+
 
 /// Defines the layout of the left pane: picker (ring + sat/value square),
 /// tab bar, slider controls column and the hex container.
@@ -2505,10 +3342,16 @@ where
 const HEX_CONTAINER_HEIGHT: f32 = 44.0;
 /// Height of the preview area (panels + labels) in the right pane.
 const PREVIEW_AREA_HEIGHT: f32 = PREVIEW_HEIGHT + 18.0 + 2.0;
-/// Height of the "new swatch set" name prompt row.
-const NAME_PROMPT_HEIGHT: f32 = 32.0;
-/// Margin of the swatch grids inside the tab page.
+/// Margin of the swatch strips inside the tab page.
 const SWATCH_PAGE_MARGIN: f32 = 5.0;
+/// The fixed height of the swatch/recent strips: [`STRIP_ROWS`] rows of
+/// cells plus the page margin above and below.
+const STRIP_HEIGHT: f32 = STRIP_ROWS as f32 * SWATCH_SIZE
+    + (STRIP_ROWS - 1) as f32 * GRID_SPACING
+    + 2.0 * SWATCH_PAGE_MARGIN;
+/// Height of the "new swatch set" name prompt band, centered vertically
+/// inside the tab page.
+const NAME_PROMPT_HEIGHT: f32 = 32.0;
 /// Height of the section headings ("Swatches", "Recent").
 const LABEL_HEIGHT: f32 = 18.0;
 /// Height of the divider.
@@ -2521,7 +3364,7 @@ const RESET_WIDTH: f32 = 64.0;
 const RIGHT_PANE_SPACING: f32 = 10.0;
 
 /// Defines the layout of the right pane: previews, swatches, recent colors
-/// and the Reset/OK/Cancel buttons.
+/// and the Reset/Eyedropper/OK buttons.
 fn right_pane_layout<'a, Message, Theme>(
     color_picker: &mut ColorPickerOverlay<'_, '_, Message, Theme>,
     renderer: &Renderer,
@@ -2576,24 +3419,10 @@ where
     children.push(tab_bar_node);
     offset_y += TAB_BAR_HEIGHT + spacing;
 
-    // [3] Swatch tab page: either the active set's grid or the "new swatch
-    // set" name prompt.
-    let page_height = if color_picker.state.naming_new_set {
-        NAME_PROMPT_HEIGHT
-    } else {
-        let count = color_picker
-            .state
-            .swatch_sets
-            .get(color_picker.state.active_swatch_tab)
-            .map_or(0, |set| set.colors.len());
-        let rows = grid_rows(count, GRID_COLS);
-        if rows == 0 {
-            0.0
-        } else {
-            rows as f32 * SWATCH_SIZE + (rows - 1) as f32 * GRID_SPACING
-                + 2.0 * SWATCH_PAGE_MARGIN
-        }
-    };
+    // [3] Swatch tab page: either the active set's strip or the "new swatch
+    // set" name prompt. Both share the fixed strip height so toggling the
+    // prompt never reflows the dialog.
+    let page_height = STRIP_HEIGHT;
 
     let mut page_children: Vec<Node> = Vec::new();
     if color_picker.state.naming_new_set {
@@ -2628,13 +3457,19 @@ where
             .move_to(Point::new(input_rect.x, input_rect.y));
         page_children.push(input_node);
     } else if let Some(set) = color_picker.state.swatch_sets.get(color_picker.state.active_swatch_tab) {
-        for (i, _) in set.colors.iter().enumerate() {
-            let row = i / GRID_COLS;
-            let col = i % GRID_COLS;
+        // Fixed strip: cells flow down [`STRIP_ROWS`] rows and then into
+        // further columns; placeholder wells pad out the viewport so the
+        // layout stays constant until the strip overflows and scrolls.
+        let cells = set.colors.len().max(STRIP_ROWS * visible_cols(width));
+        let scroll =
+            clamp_strip_scroll(color_picker.state.swatch_scroll_x, set.colors.len(), width);
+        for i in 0..cells {
+            let col = i / STRIP_ROWS;
+            let row = i % STRIP_ROWS;
             let cell = Node::with_children(Size::new(SWATCH_SIZE, SWATCH_SIZE), Vec::new())
                 .move_to(Point::new(
-                    SWATCH_PAGE_MARGIN + col as f32 * (SWATCH_SIZE + GRID_SPACING),
-                    SWATCH_PAGE_MARGIN + row as f32 * (SWATCH_SIZE + GRID_SPACING),
+                    SWATCH_PAGE_MARGIN + col as f32 * CELL_PITCH - scroll,
+                    SWATCH_PAGE_MARGIN + row as f32 * CELL_PITCH,
                 ));
             page_children.push(cell);
         }
@@ -2687,33 +3522,32 @@ where
     children.push(recent_label_node);
     offset_y += LABEL_HEIGHT + spacing;
 
-    // [7] Recent grid: `GRID_COLS` columns, dynamic height from the count.
+    // [7] Recent strip: [`STRIP_ROWS`] fixed rows, cells flowing down and
+    // then into further columns, padded with placeholder wells up to the
+    // visible capacity so the layout stays constant; it scrolls
+    // horizontally only once more colors arrive than fit.
     let recent_count = color_picker.state.recent_colors.len();
-    let recent_rows = grid_rows(recent_count, GRID_COLS);
-    let recent_grid_height = if recent_rows == 0 {
-        5.0
-    } else {
-        recent_rows as f32 * SWATCH_SIZE + (recent_rows - 1) as f32 * GRID_SPACING
-            + 5.0
-    };
+    let recent_cells = recent_count.max(STRIP_ROWS * visible_cols(width));
+    let recent_scroll =
+        clamp_strip_scroll(color_picker.state.recent_scroll_x, recent_count, width);
     let mut recent_children: Vec<Node> = Vec::new();
-    for (i, _) in color_picker.state.recent_colors.iter().enumerate() {
-        let row = i / GRID_COLS;
-        let col = i % GRID_COLS;
+    for i in 0..recent_cells {
+        let col = i / STRIP_ROWS;
+        let row = i % STRIP_ROWS;
         let cell = Node::with_children(Size::new(SWATCH_SIZE, SWATCH_SIZE), Vec::new())
             .move_to(Point::new(
-                SWATCH_PAGE_MARGIN + col as f32 * (SWATCH_SIZE + GRID_SPACING),
-                SWATCH_PAGE_MARGIN + row as f32 * (SWATCH_SIZE + GRID_SPACING),
+                SWATCH_PAGE_MARGIN + col as f32 * CELL_PITCH - recent_scroll,
+                SWATCH_PAGE_MARGIN + row as f32 * CELL_PITCH,
             ));
         recent_children.push(cell);
     }
     let recent_grid_node = Node::with_children(
-        Size::new(width, recent_grid_height),
+        Size::new(width, STRIP_HEIGHT),
         recent_children,
     )
     .move_to(Point::new(0.0, offset_y));
     children.push(recent_grid_node);
-    offset_y += recent_grid_height + spacing;
+    offset_y += STRIP_HEIGHT + spacing;
 
     // [8] Buttons row: Reset (left) + stretch + Cancel + OK.
     let reset_node = Row::<(), Theme, Renderer>::new()
@@ -2729,8 +3563,8 @@ where
     let available = width - RESET_WIDTH - 2.0 * 5.0;
     let button_width = available / 2.0;
 
-    let cancel_button = color_picker
-        .cancel_button
+    let dropper_button = color_picker
+        .dropper_button
         .layout(
             &mut color_picker.tree.children[0],
             renderer,
@@ -2749,7 +3583,7 @@ where
 
     let buttons_row = Node::with_children(Size::new(width, BUTTONS_HEIGHT), vec![
             reset_node,
-            cancel_button,
+            dropper_button,
             submit_button,
         ]);
     children.push(buttons_row);
@@ -3045,16 +3879,16 @@ fn block2<Message, Theme>(
         style_sheet,
     );
 
-    let cancel_button_layout = buttons_layout
+    let dropper_button_layout = buttons_layout
         .next()
-        .expect("Graphics: Layout should have a cancel button layout for a ColorPicker");
+        .expect("Graphics: Layout should have an eyedropper button layout for a ColorPicker");
 
     draw_overlay_button(
         renderer,
         theme,
-        cancel_icon().0,
-        cancel_button_layout.bounds(),
-        color_picker.state.cancel_pressed,
+        dropper_icon().0,
+        dropper_button_layout.bounds(),
+        color_picker.state.dropper_pressed,
         cursor,
     );
 
@@ -3082,8 +3916,8 @@ fn block2<Message, Theme>(
     draw_focus_border(
         renderer,
         color_picker,
-        cancel_button_layout.bounds(),
-        Focus::Cancel,
+        dropper_button_layout.bounds(),
+        Focus::Dropper,
         style_sheet,
     );
     draw_focus_border(
@@ -3253,9 +4087,9 @@ fn swatch_tab_bar<Message, Theme>(
     );
 }
 
-/// Draws the swatch tab page: the active set's grid (cached checkerboard +
-/// color fill + hover/focus border per cell), or the "new swatch set" name
-/// prompt when it is open.
+/// Draws the swatch tab page: the active set's strip (checkerboard + color
+/// fill + hover/focus border per cell, placeholder wells beyond the set's
+/// length), or the "new swatch set" name prompt when it is open.
 fn swatch_page<Message, Theme>(
     renderer: &mut Renderer,
     theme: &Theme,
@@ -3285,50 +4119,64 @@ fn swatch_page<Message, Theme>(
     let checker_1 = active_style.checker_color_1;
     let checker_2 = active_style.checker_color_2;
     let tile = 10.0;
+    let viewport = layout.bounds();
 
-    for (i, cell_layout) in layout.children().enumerate() {
-        let cell = cell_layout.bounds();
-        let Some(color) = set.colors.get(i) else {
-            continue;
-        };
+    // The strip is clipped to its viewport so scrolled-out cells stay
+    // hidden.
+    renderer.with_layer(viewport, |renderer| {
+        for (i, cell_layout) in layout.children().enumerate() {
+            let cell = cell_layout.bounds();
+            let Some(color) = set.colors.get(i) else {
+                draw_placeholder_well(
+                    renderer,
+                    cell,
+                    tile,
+                    checker_1,
+                    checker_2,
+                    active_style.swatch_border_color,
+                );
+                continue;
+            };
 
-        // Checkerboard behind the color; tiles are drawn as solid quads so
-        // they stack below the color fill (the renderer batches quads and
-        // meshes separately, and a mesh would always draw on top of a quad).
-        draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
+            // Checkerboard behind the color; tiles are drawn as solid quads so
+            // they stack below the color fill (the renderer batches quads and
+            // meshes separately, and a mesh would always draw on top of a quad).
+            draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
 
-        // Color fill on top (alpha-composited over the checkerboard).
-        if (cell.width > 0.) && (cell.height > 0.) {
+            // Color fill on top (alpha-composited over the checkerboard).
+            if (cell.width > 0.) && (cell.height > 0.) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: cell,
+                        ..renderer::Quad::default()
+                    },
+                    *color,
+                );
+            }
+
+            // Border: hover / keyboard focus highlight.
+            let focused = color_picker.state.focused_swatch
+                == Some((color_picker.state.active_swatch_tab, i));
+            let border_color =
+                if (cursor.is_over(cell) && viewport.intersects(&cell)) || focused {
+                    active_style.swatch_hover_border_color
+                } else {
+                    active_style.swatch_border_color
+                };
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: cell,
+                    border: Border {
+                        radius: 2.0.into(),
+                        width: 1.0,
+                        color: border_color,
+                    },
                     ..renderer::Quad::default()
                 },
-                *color,
+                Color::TRANSPARENT,
             );
         }
-
-        // Border: hover / keyboard focus highlight.
-        let focused = color_picker.state.focused_swatch
-            == Some((color_picker.state.active_swatch_tab, i));
-        let border_color = if cursor.is_over(cell) || focused {
-            active_style.swatch_hover_border_color
-        } else {
-            active_style.swatch_border_color
-        };
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds: cell,
-                border: Border {
-                    radius: 2.0.into(),
-                    width: 1.0,
-                    color: border_color,
-                },
-                ..renderer::Quad::default()
-            },
-            Color::TRANSPARENT,
-        );
-    }
+    });
 }
 
 /// Draws the "new swatch set" prompt: the name [`TextInput`] (tree child
@@ -3472,8 +4320,9 @@ fn draw_add_button(
     );
 }
 
-/// Draws the recent colors grid: cached checkerboard + color fill + hover
-/// border per cell (same drawing as the swatch grid).
+/// Draws the recent colors strip: checkerboard + color fill + hover border
+/// per cell, placeholder wells beyond the list length, clipped to the
+/// strip's viewport (same drawing as the swatch strip).
 fn draw_recent_grid<Message, Theme>(
     renderer: &mut Renderer,
     color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
@@ -3489,42 +4338,82 @@ fn draw_recent_grid<Message, Theme>(
     let checker_1 = active_style.checker_color_1;
     let checker_2 = active_style.checker_color_2;
     let tile = 10.0;
+    let viewport = layout.bounds();
 
-    for (i, cell_layout) in layout.children().enumerate() {
-        let cell = cell_layout.bounds();
-        let Some(color) = color_picker.state.recent_colors.get(i) else {
-            continue;
-        };
+    // The strip is clipped to its viewport so scrolled-out cells stay
+    // hidden.
+    renderer.with_layer(viewport, |renderer| {
+        for (i, cell_layout) in layout.children().enumerate() {
+            let cell = cell_layout.bounds();
+            let Some(color) = color_picker.state.recent_colors.get(i) else {
+                draw_placeholder_well(
+                    renderer,
+                    cell,
+                    tile,
+                    checker_1,
+                    checker_2,
+                    active_style.swatch_border_color,
+                );
+                continue;
+            };
 
-        draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
+            draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
 
-        if (cell.width > 0.) && (cell.height > 0.) {
+            if (cell.width > 0.) && (cell.height > 0.) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: cell,
+                        ..renderer::Quad::default()
+                    },
+                    *color,
+                );
+            }
+
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: cell,
+                    border: Border {
+                        radius: 2.0.into(),
+                        width: 1.0,
+                        color: if cursor.is_over(cell) && viewport.intersects(&cell) {
+                            active_style.swatch_hover_border_color
+                        } else {
+                            active_style.swatch_border_color
+                        },
+                    },
                     ..renderer::Quad::default()
                 },
-                *color,
+                Color::TRANSPARENT,
             );
         }
+    });
+}
 
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds: cell,
-                border: Border {
-                    radius: 2.0.into(),
-                    width: 1.0,
-                    color: if cursor.is_over(cell) {
-                        active_style.swatch_hover_border_color
-                    } else {
-                        active_style.swatch_border_color
-                    },
-                },
-                ..renderer::Quad::default()
+/// Draws an empty placeholder well of the swatch/recent strips: a plain
+/// checkerboard with the idle swatch border; placeholders are not
+/// interactive.
+fn draw_placeholder_well(
+    renderer: &mut Renderer,
+    bounds: Rectangle,
+    tile: f32,
+    checker_1: Color,
+    checker_2: Color,
+    border_color: Color,
+) {
+    draw_checkerboard(renderer, bounds, tile, checker_1, checker_2);
+
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds,
+            border: Border {
+                radius: 2.0.into(),
+                width: 1.0,
+                color: border_color,
             },
-            Color::TRANSPARENT,
-        );
-    }
+            ..renderer::Quad::default()
+        },
+        Color::TRANSPARENT,
+    );
 }
 
 /// Draws a checkerboard of solid quads behind a color, clamping the edge
@@ -3807,6 +4696,172 @@ fn draw_overlay_button<Theme>(
         bounds,
     );
 }
+/// The total span of the magnifier pixel grid (logical pixels).
+fn lens_grid_span() -> f32 {
+    let cells = (2 * LENS_SRC_RADIUS + 1) as f32;
+    cells * LENS_CELL + (cells - 1.0) * LENS_GAP
+}
+
+/// The full size of the magnifier backdrop: pixel grid plus padding and the
+/// hex readout pill below it.
+fn lens_backdrop_size() -> Size {
+    let span = lens_grid_span();
+    Size::new(
+        span + 2.0 * LENS_PAD,
+        LENS_PAD + span + LENS_PAD + LENS_PILL_HEIGHT,
+    )
+}
+
+/// Positions the magnifier backdrop relative to the cursor, flipping to the
+/// opposite quadrant near the right/bottom edges of `bounds` and clamping
+/// so it stays fully inside them (never leaves the window).
+fn lens_backdrop_rect(cursor: Point, bounds: Rectangle) -> Rectangle {
+    let size = lens_backdrop_size();
+
+    let mut x = cursor.x + LENS_CURSOR_MARGIN;
+    let mut y = cursor.y + LENS_CURSOR_MARGIN;
+
+    if x + size.width > bounds.x + bounds.width {
+        x = cursor.x - LENS_CURSOR_MARGIN - size.width;
+    }
+    if y + size.height > bounds.y + bounds.height {
+        y = cursor.y - LENS_CURSOR_MARGIN - size.height;
+    }
+
+    x = x.max(bounds.x).min((bounds.x + bounds.width - size.width).max(bounds.x));
+    y = y.max(bounds.y).min((bounds.y + bounds.height - size.height).max(bounds.y));
+
+    Rectangle::new(Point::new(x, y), size)
+}
+
+/// Formats a [`Color`] as an opaque `#RRGGBB` string for the lens readout.
+fn rgb_hex_string(color: Color) -> String {
+    fn byte(v: f32) -> u8 {
+        (v * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+    format!("#{:02X}{:02X}{:02X}", byte(color.r), byte(color.g), byte(color.b))
+}
+
+/// Draws the eye dropper magnifier lens: a zoomed pixel grid around the
+/// hovered source pixel, a crosshair marking the exact pixel and a pill
+/// with its `#RRGGBB` value. Pixels outside the captured frame render as
+/// checkerboard.
+fn draw_dropper_lens(
+    renderer: &mut Renderer,
+    frame: &Frame,
+    hovered: Point,
+    clamp_bounds: Rectangle,
+    style: &Style,
+) {
+    let backdrop = lens_backdrop_rect(hovered, clamp_bounds);
+
+    // Backdrop panel.
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: backdrop,
+            border: Border {
+                radius: 6.0.into(),
+                width: 1.0,
+                color: style.lens_border_color,
+            },
+            ..renderer::Quad::default()
+        },
+        Background::Color(style.lens_backdrop),
+    );
+
+    // Zoomed pixel grid.
+    let center = LENS_SRC_RADIUS;
+    let pitch = LENS_CELL + LENS_GAP;
+    let grid_origin = Point::new(backdrop.x + LENS_PAD, backdrop.y + LENS_PAD);
+    let radius = 2.0;
+
+    for dy in -center..=center {
+        for dx in -center..=center {
+            let cell = Rectangle::new(
+                Point::new(
+                    grid_origin.x + (dx + center) as f32 * pitch,
+                    grid_origin.y + (dy + center) as f32 * pitch,
+                ),
+                Size::new(LENS_CELL, LENS_CELL),
+            );
+            let color = frame
+                .sample(hovered.x + dx as f32, hovered.y + dy as f32)
+                .unwrap_or(style.checker_color_2);
+
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: cell,
+                    border: Border {
+                        radius: radius.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    ..renderer::Quad::default()
+                },
+                Background::Color(color),
+            );
+        }
+    }
+
+    // Crosshair ring around the exact hovered pixel.
+    let center_cell = Rectangle::new(
+        Point::new(
+            grid_origin.x + center as f32 * pitch - 2.0,
+            grid_origin.y + center as f32 * pitch - 2.0,
+        ),
+        Size::new(LENS_CELL + 4.0, LENS_CELL + 4.0),
+    );
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: center_cell,
+            border: Border {
+                radius: (radius + 2.0).into(),
+                width: 2.0,
+                color: style.lens_crosshair_color,
+            },
+            ..renderer::Quad::default()
+        },
+        Background::Color(Color::TRANSPARENT),
+    );
+
+    // Hex readout pill.
+    let pill = Rectangle::new(
+        Point::new(backdrop.x + LENS_PAD, backdrop.y + LENS_PAD + lens_grid_span() + LENS_PAD),
+        Size::new(lens_grid_span(), LENS_PILL_HEIGHT),
+    );
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: pill,
+            border: Border {
+                radius: 4.0.into(),
+                width: 1.0,
+                color: style.panel_border_color,
+            },
+            ..renderer::Quad::default()
+        },
+        Background::Color(style.lens_pill_background),
+    );
+
+    if let Some(color) = frame.sample(hovered.x, hovered.y) {
+        renderer.fill_text(
+            Text {
+                content: rgb_hex_string(color),
+                bounds: pill.size(),
+                size: Pixels(13.0),
+                font: Font::default(),
+                align_x: text::Alignment::Center,
+                align_y: Vertical::Center,
+                line_height: text::LineHeight::Relative(1.0),
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            },
+            pill.center(),
+            style.lens_pill_text,
+            pill,
+        );
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn hsv_color<Message, Theme>(
     renderer: &mut Renderer,
@@ -4403,8 +5458,8 @@ pub struct State {
     pub(crate) focus: Focus,
     /// The previously pressed keyboard modifiers.
     pub(crate) keyboard_modifiers: keyboard::Modifiers,
-    /// Whether the cancel button is currently pressed.
-    pub(crate) cancel_pressed: bool,
+    /// Whether the eyedropper button is currently pressed.
+    pub(crate) dropper_pressed: bool,
     /// Whether the submit button is currently pressed.
     pub(crate) submit_pressed: bool,
     /// Whether the reset button is currently pressed.
@@ -4429,6 +5484,10 @@ pub struct State {
     pub(crate) pending_swatch_name: String,
     /// The recently submitted colors.
     pub(crate) recent_colors: Vec<Color>,
+    /// The horizontal scroll offset of the recent colors strip.
+    pub(crate) recent_scroll_x: f32,
+    /// The horizontal scroll offset of the active swatch set's strip.
+    pub(crate) swatch_scroll_x: f32,
     /// Hit-test results of the swatch section.
     pub(crate) swatch_hover: SwatchHover,
     /// Whether the RGB(A) tab is hovered.
@@ -4440,6 +5499,24 @@ pub struct State {
     /// The swatch cell targeted by the keyboard cursor while
     /// [`Focus::Swatches`] is active: `(set index, color index)`.
     pub(crate) focused_swatch: Option<(usize, usize)>,
+    /// The persisted top-left position of the [`ColorPickerWindow`] inside
+    /// the viewport. `None` until the first open computes a base position;
+    /// afterwards it survives close/reopen so the window reappears where
+    /// the user dragged it.
+    pub(crate) dialog_position: Option<Point>,
+    /// The grab offset while the window header is being dragged:
+    /// cursor position minus the dialog origin.
+    pub(crate) header_drag_offset: Option<Vector>,
+    /// Whether the header close ("x") button is currently pressed.
+    pub(crate) close_pressed: bool,
+    /// The runtime mode of the eye dropper.
+    pub(crate) dropper_mode: DropperMode,
+    /// The frozen window snapshot owned while the eye dropper picks a
+    /// pixel. `None` outside of [`DropperMode::Picking`].
+    pub(crate) dropper_frame: Option<Frame>,
+    /// The last hovered point during picking (window coordinates, logical
+    /// pixels).
+    pub(crate) dropper_cursor: Point,
 }
 
 impl State {
@@ -4521,7 +5598,7 @@ impl Default for State {
             color_bar_dragged: ColorBarDragged::None,
             focus: Focus::default(),
             keyboard_modifiers: keyboard::Modifiers::default(),
-            cancel_pressed: false,
+            dropper_pressed: false,
             submit_pressed: false,
             reset_pressed: false,
             active_tab: ActiveTab::Rgb,
@@ -4535,11 +5612,19 @@ impl Default for State {
             naming_new_set: false,
             pending_swatch_name: String::new(),
             recent_colors: Vec::new(),
+            recent_scroll_x: 0.0,
+            swatch_scroll_x: 0.0,
             swatch_hover: SwatchHover::default(),
             tab_rgb_hovered: false,
             tab_hsv_hovered: false,
             plus_tab_hovered: false,
             focused_swatch: None,
+            dialog_position: None,
+            header_drag_offset: None,
+            close_pressed: false,
+            dropper_mode: DropperMode::Idle,
+            dropper_frame: None,
+            dropper_cursor: Point::ORIGIN,
             hex_input: color_to_hex_argb(default_color),
             value_inputs: value_inputs_from_color(default_color),
         }
@@ -4568,8 +5653,8 @@ where
     Message: Clone,
     Theme: style::Catalog + iced::widget::button::Catalog,
 {
-    /// The cancel button of the [`ColorPickerOverlay`].
-    cancel_button: Element<'a, Message, Theme, Renderer>,
+    /// The eyedropper button of the [`ColorPickerOverlay`].
+    dropper_button: Element<'a, Message, Theme, Renderer>,
     /// The submit button of the [`ColorPickerOverlay`].
     submit_button: Element<'a, Message, Theme, Renderer>,
 }
@@ -4584,11 +5669,14 @@ where
         + iced::widget::text_input::Catalog,
 {
     fn default() -> Self {
-        let (cancel_content, cancel_font) = cancel_icon();
+        let (dropper_content, dropper_font) = dropper_icon();
         let (submit_content, submit_font) = ok_icon();
 
         Self {
-            cancel_button: Button::new(widget::Text::new(cancel_content).font(cancel_font)).into(),
+            dropper_button: Button::new(
+                widget::Text::new(dropper_content).font(dropper_font),
+            )
+            .into(),
             submit_button: Button::new(widget::Text::new(submit_content).font(submit_font)).into(),
         }
     }
@@ -4604,7 +5692,7 @@ where
 {
     fn children(&self) -> Vec<Tree> {
         vec![
-            Tree::new(&self.cancel_button),
+            Tree::new(&self.dropper_button),
             Tree::new(&self.submit_button),
         ]
     }
@@ -4740,8 +5828,8 @@ pub enum Focus {
     /// The reset button is in focus.
     Reset,
 
-    /// The cancel button is in focus.
-    Cancel,
+    /// The eyedropper button is in focus.
+    Dropper,
 
     /// The submit button is in focus.
     Submit,
@@ -4788,7 +5876,7 @@ fn focus_cycle(active_tab: ActiveTab, naming_new_set: bool) -> Vec<Focus> {
         Focus::TabHsv,
         Focus::Swatches,
         Focus::Reset,
-        Focus::Cancel,
+        Focus::Dropper,
         Focus::Submit,
     ]);
     cycle
@@ -4837,7 +5925,7 @@ mod tests {
             Focus::TabHsv,
             Focus::Swatches,
             Focus::Reset,
-            Focus::Cancel,
+            Focus::Dropper,
             Focus::Submit,
         ] {
             focus = next_focus(focus, ActiveTab::Rgb, false);
@@ -4862,7 +5950,7 @@ mod tests {
             Focus::TabHsv,
             Focus::Swatches,
             Focus::Reset,
-            Focus::Cancel,
+            Focus::Dropper,
             Focus::Submit,
         ] {
             focus = next_focus(focus, ActiveTab::Hsv, false);
@@ -4876,7 +5964,7 @@ mod tests {
         let mut focus = Focus::Overlay;
         for expected in [
             Focus::Submit,
-            Focus::Cancel,
+            Focus::Dropper,
             Focus::Reset,
             Focus::Swatches,
             Focus::TabHsv,
@@ -4900,7 +5988,7 @@ mod tests {
         let mut focus = Focus::Overlay;
         for expected in [
             Focus::Submit,
-            Focus::Cancel,
+            Focus::Dropper,
             Focus::Reset,
             Focus::Swatches,
             Focus::TabHsv,
@@ -5034,13 +6122,39 @@ mod tests {
     }
 
     #[test]
-    fn grid_rows_counts() {
-        assert_eq!(grid_rows(0, GRID_COLS), 0);
-        assert_eq!(grid_rows(1, GRID_COLS), 1);
-        assert_eq!(grid_rows(5, GRID_COLS), 1);
-        assert_eq!(grid_rows(6, GRID_COLS), 2);
-        assert_eq!(grid_rows(11, GRID_COLS), 3);
-        assert_eq!(grid_rows(12, GRID_COLS), 3);
+    fn visible_cols_fits_the_pane() {
+        // The 230px pane fits six 30px columns plus margins and spacing.
+        assert_eq!(visible_cols(RIGHT_PANE_WIDTH), 6);
+        // Narrow viewports still show at least one placeholder cell.
+        assert_eq!(visible_cols(0.0), 1);
+        assert_eq!(visible_cols(SWATCH_SIZE), 1);
+    }
+
+    #[test]
+    fn strip_content_cols_fill_the_viewport_first() {
+        // Empty: exactly one viewport worth of placeholder columns.
+        assert_eq!(strip_content_cols(0, RIGHT_PANE_WIDTH), 6);
+        // A partial trailing column counts once.
+        assert_eq!(strip_content_cols(7, RIGHT_PANE_WIDTH), 6);
+        // Overflow grows horizontally.
+        assert_eq!(strip_content_cols(19, RIGHT_PANE_WIDTH), 7);
+    }
+
+    #[test]
+    fn strip_scroll_clamps_to_content() {
+        // One viewport worth fits exactly: no scrolling.
+        assert_eq!(strip_max_scroll(0, RIGHT_PANE_WIDTH), 0.0);
+        assert_eq!(strip_max_scroll(18, RIGHT_PANE_WIDTH), 0.0);
+        // Nineteen cells need seven columns; scrolling stops at the margin.
+        let expected = strip_content_width(19, RIGHT_PANE_WIDTH)
+            + 2.0 * SWATCH_PAGE_MARGIN
+            - RIGHT_PANE_WIDTH;
+        assert_eq!(strip_max_scroll(19, RIGHT_PANE_WIDTH), expected.max(0.0));
+        assert_eq!(clamp_strip_scroll(-5.0, 19, RIGHT_PANE_WIDTH), 0.0,);
+        assert_eq!(
+            clamp_strip_scroll(expected + 100.0, 19, RIGHT_PANE_WIDTH),
+            expected
+        );
     }
 
     #[test]

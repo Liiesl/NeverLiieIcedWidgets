@@ -17,7 +17,7 @@ This library provides additional widgets for iced that are not available in the 
 | [Slider Tooltip](docs/slider_tooltip.md) | Slider with floating value tooltip during hover and drag | Stable |
 | [Lazy Icon](docs/lazy_icon.md) | Lazy-loading icon with placeholder, plus skeleton `placeholder` widget | Stable |
 | [Ellipsis Text](docs/ellipsis_text.md) | Line-clamped text with ellipsis (`…`) truncation | Stable |
-| [Color Picker](docs/color_picker.md) | Dialog-style color picker with hue ring, RGB/HSV sliders, swatches and recent colors | Stable |
+| [Color Picker](docs/color_picker.md) | Inline color picker widget or draggable floating window dialog with hue ring, RGB/HSV sliders, swatches and recent colors | Stable |
 | [Title Bar](docs/title_bar.md) | Cross-platform custom window frame with native Windows 11 caption semantics (Snap Layouts, accent border) | Stable |
 
 ## Installation

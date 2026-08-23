@@ -1,13 +1,14 @@
 # Color Picker Widget
 
-A dialog-style color picker input element. Ported from `iced_aw`'s `color_picker` module, with the overlay reworked to mirror the PySide6 `BetterColorDialog`: a hue ring and saturation/value square on the left, RGB(A)/HSV tabbed gradient sliders with channel fields and a hex input, and on the right Original/New preview panels, tabbed swatch sets, a recent colors grid and the Reset/OK/Cancel buttons.
+A color picker dialog. Ported from `iced_aw`'s `color_picker` module, with the dialog reworked to mirror the PySide6 `BetterColorDialog`: a hue ring and saturation/value square on the left, RGB(A)/HSV tabbed gradient sliders with channel fields and a hex input, and on the right Original/New preview panels, tabbed swatch sets, a recent colors grid and the Reset/Eyedropper/OK buttons (the former Cancel slot now hosts the [eye dropper](#eye-dropper); the floating window keeps its header "x" as a cancel path).
 
-## Overview
+The dialog comes in two shapes:
 
 | Type | Purpose |
 |------|---------|
-| `ColorPicker` | The picker widget; wraps an underlay element and shows the dialog as an overlay |
-| `State` | Per-widget state: selected color, focus, tab, swatches, recent colors |
+| `ColorPicker` | **Generic inline widget** — plant it into any builder like a regular widget; always visible, no spawn button required |
+| `FloatingColorPicker` | **Floating window mode** — wraps an underlay (typically a button) and spawns the dialog inside a draggable window-like shell with a header (empty drag area + close "x" button) |
+| `State` / `FloatingState` | Per-widget state: selected color, focus, tab, swatches, recent colors |
 | `ActiveTab` | The active controls tab: `Rgb` or `Hsv` |
 | `SwatchSet` | A named set of swatch colors shown in the swatch tab bar |
 | `Status` | Style status: Active, Hovered, Pressed, Disabled, Focused, Selected |
@@ -15,31 +16,28 @@ A dialog-style color picker input element. Ported from `iced_aw`'s `color_picker
 
 Swatches and recent colors are kept in memory only (no persistence), and all styling is derived from the active iced `Theme` palette.
 
-## Basic Usage
+## Mode 1 — Generic Inline Widget
 
-Use the `color_picker` shortcut function:
+`ColorPicker` is a plain always-visible widget. There is no underlay and no `show_picker` flag: control visibility by planting or not planting the element.
 
 ```rust
-use iced::{widget::button, Color, Element};
+use iced::{Color, Element};
 use neverliie_iced_widgets::color_picker::color_picker;
-use neverliie_iced_widgets::overlay::Position;
 
 #[derive(Clone, Debug)]
 enum Message {
-    Open,
     Cancel,
     Submit(Color),
     ColorChanged(Color),
 }
 
-fn view(show_picker: bool, color: Color) -> Element<'_, Message> {
-    color_picker(
-        show_picker,
-        color,
-        button("Pick color").on_press(Message::Open),
-        Message::Cancel,
-        Message::Submit,
-    )
+fn view(color: Color) -> Element<'_, Message> {
+    // Plant it anywhere in any builder:
+    iced::widget::column![
+        iced::widget::text("Accent color"),
+        color_picker(color, Message::Cancel, Message::Submit)
+            .on_color_change(Message::ColorChanged),
+    ]
     .into()
 }
 ```
@@ -48,75 +46,82 @@ Or use the struct builder API:
 
 ```rust
 use neverliie_iced_widgets::color_picker::ColorPicker;
-use iced::widget::{Button, Text};
 
 let picker = ColorPicker::new(
-    true,                                   // show the picker overlay
-    Color::default(),                       // initial color
-    Button::new(Text::new("Pick color"))
-        .on_press(Message::Open),           // underlay element
-    Message::Cancel,                        // cancel button message
-    Message::Submit,                        // submit callback: Fn(Color) -> Message
-);
+    color,                    // initial color
+    Message::Cancel,          // placeholder message (no cancel UI in inline mode)
+    Message::Submit,          // submit callback: Fn(Color) -> Message
+)
+.on_color_change(Message::ColorChanged);
 ```
 
-The arguments are:
+`on_cancel` is still a required argument in inline mode, but the dialog has no cancel control anymore: the internal inputs and buttons only reuse the message as a dummy publication that the widget intercepts before it reaches the application, so any cheap-to-build message works. Only the [floating window](#mode-2--floating-window) publishes it for real, via its header "x" close button.
 
-1. `show_picker` — whether the overlay is visible
-2. `color` — the initial color to show
-3. `underlay` — the `Element` the picker wraps around (e.g. a button)
-4. `on_cancel` — message sent when the Cancel button is pressed
-5. `on_submit` — `Fn(Color) -> Message` called with the picked color when OK is pressed
+While mounted the picker "owns" the value internally. The `color` argument only re-seeds the selection when it differs from both the previous argument (so echoed live updates are ignored) and the current internal selection — passing a genuinely new color resets the dialog.
+
+## Mode 2 — Floating Window
+
+`FloatingColorPicker` keeps the classic spawn-by-button flow, but the spawned dialog is a free-floating window-like shell (still a regular overlay/widget, not a separate OS window):
+
+- a **header** with an empty dragging area and an **"x" close button** publishing `on_cancel`;
+- the whole header drags the window anywhere inside the viewport;
+- `.position(...)` sets the *initial* position; after dragging, the dragged position wins and **survives close/reopen**.
+
+```rust
+use iced::widget::button;
+use neverliie_iced_widgets::color_picker::floating_color_picker;
+use neverliie_iced_widgets::overlay::Position;
+
+let floating = floating_color_picker(
+    show_picker,                       // whether the window is open
+    color,
+    button("Pick color").on_press(Message::Open),
+    Message::Cancel,                   // header "x" close button
+    Message::Submit,
+)
+.position(Position::ViewportCenter);   // initial placement only
+```
 
 ## Real-Time Color Changes
 
-Publish a message on every selection change (ring, square, bars, hex input, swatch, keyboard), not just on submit:
+Both modes publish a message on every selection change (ring, square, bars, hex input, swatch, keyboard), not just on submit:
 
 ```rust
-color_picker(show, color, underlay, Message::Cancel, Message::Submit)
-    .on_color_change(Message::ColorChanged)
+picker.on_color_change(Message::ColorChanged)          // inline
+floating.on_color_change(Message::ColorChanged)        // floating
 ```
 
-There is also a one-shot shortcut equivalent to the builder call above:
+One-shot shortcuts exist for both:
 
 ```rust
-use neverliie_iced_widgets::color_picker::color_picker_with_change;
-
-color_picker_with_change(
-    show, color, underlay,
-    Message::Cancel,
-    Message::Submit,
-    Message::ColorChanged,
-)
+color_picker_with_change(color, cancel, submit, change)
+floating_color_picker_with_change(show, color, underlay, cancel, submit, change)
 ```
 
-While the picker is open it "owns" the color value: re-renders with a live-updated `color` argument do **not** reset the selection. The initial color shown in the Original preview panel is frozen at the open-time color and only refreshed when the picker is reopened.
+While a floating picker is open it owns the value: re-renders with a live-updated `color` argument do **not** reset the selection. The initial color shown in the Original preview panel is frozen at the open-time color and only refreshed when the picker is reopened.
 
-## Positioning
+## Positioning (floating mode)
 
-Set where the dialog appears with `.position(...)`, using the same `Position` strategies as the [overlay widget](overlay.md) (`neverliie_iced_widgets::overlay::Position`):
+`.position(...)` uses the same strategies as the [overlay widget](overlay.md) (`neverliie_iced_widgets::overlay::Position`) but only for the first open:
 
 ```rust
-use neverliie_iced_widgets::overlay::Position;
-
-color_picker(show, color, underlay, Message::Cancel, Message::Submit)
-    .position(Position::BottomRight)      // relative to the underlay
-    .position(Position::ViewportCenter)   // relative to the viewport
-    .position(Position::FollowCursor)     // follows the mouse
+floating.position(Position::BottomRight)      // relative to the underlay
+floating.position(Position::ViewportCenter)   // relative to the viewport
+floating.position(Position::FollowCursor)     // follows the mouse at spawn
 ```
 
-Without a position (the default) the dialog is centered over the underlay and bounced back into the viewport, so it always stays fully on screen. Cursor-following positions request redraws on every cursor move so the dialog tracks the mouse.
+Without a position the window first appears centered over the underlay and bounces back into the viewport. Every frame the window is clamped so it stays fully visible, even after viewport resizes. Dragging by the header overrides all of this; the last dragged spot persists across close/reopen (per picker instance).
 
 ## Dialog Layout
 
-The dialog is split into two panes:
+The dialog content is split into two panes:
 
 ### Left Pane
 
 - **Hue ring** — a 300px circular ring; drag on the ring band to pick the hue, or scroll the mouse wheel over it to nudge the hue
 - **Saturation/Value square** — drag inside the square to pick saturation (x-axis) and value (y-axis); an outline circle indicates the current position
 - **Controls tab bar** — switch between the `RGB(A)` and `HSV` tabs
-- **Gradient slider bars** — one per channel of the active tab: R, G, B, A or H, S, V; drag to adjust, or click to jump
+- **Gradient slider bars** — four bars per tab: R, G, B, A on the RGB(A) tab and H, S, V, A on the HSV tab (the alpha bar is always present); drag to adjust, or click to jump
 - **Channel value fields** — seven text inputs (`[R, G, B, A, H, S, V]`); RGB(A) channels and S/V are on the `0..=255` scale, hue on `0..=359`. Values are clamped on input
 - **Hex input** — freeform hex color input, see below
 
@@ -127,7 +132,59 @@ The dialog is split into two panes:
 - **New swatch set prompt** — typing a name (followed by Enter or the Add button) creates an empty set and selects it; empty names are ignored
 - **Add-current-color button** — inserts the current color at the front of the active swatch set
 - **Recent colors grid** — up to 12 previously submitted colors
-- **Buttons** — Reset (restores the open-time color), Cancel, OK
+- **Buttons** — Reset (restores the open-time color), Eyedropper (see below), OK
+
+## Eye Dropper
+
+The dialog includes an **in-window eye dropper** (the button in the former Cancel slot). It samples colors from a frozen snapshot of the *application window contents only* — it never captures anything outside the window. When active, a **magnifier lens** follows the cursor: a 13×13 zoomed pixel grid with a crosshair marking the exact pixel and a `#RRGGBB` pill below. Pixels outside the captured area render as checkerboard.
+
+Interaction:
+
+| Input | Action |
+|-------|--------|
+| Left click / Enter / Space | Commit the hovered pixel (fires `on_color_change`) and leave picking mode |
+| Right click / Escape | Abort without changing the selection |
+| Arrow keys | Nudge the hovered pixel by one screen pixel |
+
+While picking, every mouse/keyboard event is consumed: nothing beneath reacts (the floating dialog fully freezes the underlying UI; the inline widget suppresses interaction inside its own tree branch). The lens is always clamped so it stays fully inside the window.
+
+Because iced widgets cannot spawn `Task`s themselves, the capture is plumbed through the application:
+
+1. Hand a clone of a shared [`DropperBuffer`](crate::color_picker::DropperBuffer) to the picker via `.dropper_buffer(...)` and set `.on_dropper_capture(|| Msg::Capture)`. Without both, the eyedropper button renders disabled.
+2. On `Msg::Capture`, run `window::latest().and_then(window::screenshot)` and map the result to e.g. `Msg::Shot`.
+3. On `Msg::Shot(screenshot)`, call `buffer.store(&screenshot)`.
+
+The widget picks the fresh frame up on its next update pass and enters picking mode; each frame is consumed exactly once and stale frames are discarded on activation. Pressing the eyedropper button again while waiting for the capture aborts the request.
+
+```rust
+# use neverliie_iced_widgets::color_picker::{floating_color_picker_with_change, DropperBuffer};
+# use iced::{Color, Task, window};
+# #[derive(Clone, Debug)]
+# enum Message { Capture, Shot(window::screenshot::Screenshot), Cancel, Submit(Color) }
+let buffer = DropperBuffer::new();
+
+let floating = floating_color_picker_with_change(
+    true,
+    Color::BLACK,
+    iced::widget::button("Pick color").on_press(Message::Cancel),
+    Message::Cancel,
+    Message::Submit,
+    Message::Submit,
+)
+.dropper_buffer(buffer.clone())
+.on_dropper_capture(|| Message::Capture);
+
+fn update(message: Message, buffer: &DropperBuffer) -> Task<Message> {
+    match message {
+        Message::Capture => window::latest().and_then(window::screenshot).map(Message::Shot),
+        Message::Shot(screenshot) => {
+            buffer.store(&screenshot);
+            Task::none()
+        }
+        _ => Task::none(),
+    }
+}
+```
 
 ## Hex Input
 
@@ -153,13 +210,15 @@ The hex field parses `#RGB`, `#RGBA`, `#RRGGBB` and `#RRGGBBAA`:
 
 Focus moves with **Tab** (and back with **Shift+Tab**) through a cycle that adapts to the active tab:
 
-`Overlay → Ring → Square → channels (R,G,B,A or H,S,V) → tabs → Swatches → [NewSetName] → Reset → Cancel → Submit`
+`Overlay → Ring → Square → channels (R,G,B,A or H,S,V,A) → Hex input → [NewSetName] → tabs → Swatches → Reset → Dropper → Submit`
+
+(`[NewSetName]` only appears in the cycle while the "new swatch set" naming prompt is open.)
 
 - **Arrow keys** adjust the focused control:
   - Ring / H-S bar: hue by `1°` (wraps via `% 360`)
   - Square: saturation / value by `0.005` per press (Up/Down swap places with Left/Right on the S and V bars, mirroring the reference dialog)
   - R/G/B/A bars: channel by `1` on the `0..=255` scale
-- **Enter / Space** activates the focused tab, Reset button, or swatch cell
+- **Enter / Space** activates the focused tab, Reset button, eyedropper button (starting a [capture request](#eye-dropper)), or swatch cell
 - **Arrow keys** move a cell cursor through the swatch grid (clamped to the set's bounds); **Enter/Space** applies the focused swatch
 - Typing goes to the hex and channel value inputs while they hold focus; the outer cycle is skipped while a text input is focused
 - **Escape** aborts the "new swatch set" name prompt; **Tab** while inside the name input refocuses the cycle
@@ -168,40 +227,23 @@ Focus moves with **Tab** (and back with **Shift+Tab**) through a cycle that adap
 
 All default styling is derived from the active iced `Theme` extended palette, following the dark, panel-based look of the reference dialog (`#2D2D2D` background, `#333333` panels, `#FFFFFF`/`#BBBBBB` text, `#3A3A3A`/`#4A4A4A` neutral surfaces, danger-toned Reset button).
 
-The `Style` struct covers every surface of the dialog:
+The `Style` struct covers every surface of the dialog (dialog background/border, panels, tabs, slider bars/handles/grooves, checkerboard tiles, preview/swatch borders, Reset button) plus the floating-window chrome:
 
 ```rust
 pub struct Style {
-    pub background: Background,             // Dialog background
-    pub border_radius: f32,                 // Dialog corner radius
-    pub border_width: f32,                  // Dialog border width
-    pub border_color: Color,                // Dialog border color
-    pub panel_background: Background,       // Inner panes/containers
-    pub panel_border_radius: f32,
-    pub panel_border_color: Color,
-    pub text_primary: Color,                // Main text (#FFFFFF)
-    pub text_secondary: Color,              // Labels/secondary (#BBBBBB)
-    pub tab_background: Background,         // Inactive tab
-    pub tab_selected_background: Background,
-    pub tab_hover_background: Background,
-    pub tab_border_color: Color,
-    pub bar_border_radius: f32,             // Gradient slider bars
-    pub bar_border_width: f32,
-    pub bar_border_color: Color,
-    pub slider_groove_border_color: Color,  // Slider grooves (#3A3A3A)
-    pub slider_handle_background: Color,    // Slider handles
-    pub slider_handle_hover_background: Color,
-    pub slider_handle_border_color: Color,
-    pub sv_square_indicator_radius: f32,    // S/V square outline circle
-    pub checker_color_1: Color,             // Checkerboard tiles (light)
-    pub checker_color_2: Color,             // Checkerboard tiles (dark)
-    pub checker_alpha_1: Color,             // Alpha groove checker (light)
-    pub checker_alpha_2: Color,             // Alpha groove checker (dark)
-    pub preview_border_color: Color,        // Original/New panels
-    pub swatch_border_color: Color,         // Swatch buttons
-    pub swatch_hover_border_color: Color,
-    pub reset_background: Color,            // Reset button
-    pub reset_hover_background: Color,
+    // ... dialog fields ...
+    pub header_background: Background,       // Draggable window header strip
+    pub header_border_color: Color,          // Divider line under the header
+    pub close_button_background: Color,      // Header "x" button
+    pub close_button_hover_background: Color,
+    pub close_button_border_color: Color,
+    pub close_symbol_color: Color,           // "x" glyph
+
+    pub lens_backdrop: Color,                // Eye dropper magnifier backdrop
+    pub lens_border_color: Color,            // Magnifier lens border
+    pub lens_crosshair_color: Color,         // Crosshair over the exact pixel
+    pub lens_pill_background: Color,         // Hex readout pill background
+    pub lens_pill_text: Color,               // Hex readout pill text
 }
 ```
 
@@ -210,7 +252,7 @@ Apply a custom style based on the theme and [`Status`]:
 ```rust
 use neverliie_iced_widgets::color_picker::{color_picker, style};
 
-color_picker(show, color, underlay, Message::Cancel, Message::Submit)
+color_picker(color, Message::Cancel, Message::Submit)
     .style(|theme, status| {
         let mut style = style::primary(theme, status);
         style.border_color = theme.extended_palette().primary.strong.color;
@@ -228,45 +270,66 @@ color_picker(show, color, underlay, Message::Cancel, Message::Submit)
 
 ## How It Works
 
-1. `ColorPicker` is a custom iced widget that forwards layout, events, drawing and operations to its underlay, and returns the dialog through its `overlay()` implementation when `show_picker` is true
-2. A `State` tree node per widget holds the selection state; `diff` synchronizes it with the widget's `color` argument only at open time (`force_synchronize`), keeping the Original preview frozen while the dialog is open
-3. The hue ring and S/V square are cached `canvas` widgets; the caches are cleared whenever the color or layout changes
-4. What happens on interaction:
-   - Dragging the ring/square/bars updates the color and fires `on_color_change` (if set)
-   - The hex input and channel fields write into `State`, are validated/clamped, and reformat the display strings
-   - Swatch clicks, the add-current-color button and submit push into the swatch/recent lists with byte-exact deduplication
-5. The dialog is positioned via `Node::center_and_bounce` (default) or resolved like the overlay's `Position` strategies, clamped to the viewport
-6. Keyboard input is only handled when the overlay's internal `Focus` is set, producing the Tab cycle and arrow-key adjustments described above
-7. Submitting publishes `on_submit(picked_color)`; canceling publishes `on_cancel`
+1. `ColorPickerOverlay` (in `overlay.rs`) is the shared **dialog content view**: manual two-pane layout, hit-testing and canvas drawing used by both public widgets
+2. The inline `ColorPicker` implements `Widget` directly and delegates each pass to the content view; its `State` re-seeds only on genuine external color changes
+3. `FloatingColorPicker` forwards layout/events/drawing to its underlay and returns a `ColorPickerWindow` overlay element while shown; the window adds the draggable header, the close button and position persistence (`State::dialog_position`)
+4. Dragging follows the same press/move/release idiom as the color bars: press on the header stores the grab offset, cursor moves update the stored origin (clamped to the viewport), release ends the drag
+5. A `State` tree node per widget holds the selection state; the floating variant synchronizes with the provided color only at open time (`force_synchronize`), keeping the Original preview frozen while the window is open
+6. The hue ring and S/V square are cached `canvas` widgets; the caches are cleared whenever the color or layout changes
+7. Keyboard input is only handled when the content's internal `Focus` is set, producing the Tab cycle and arrow-key adjustments described above
+8. Submitting publishes `on_submit(picked_color)`; canceling (the floating window's header "x") publishes `on_cancel`. The dialog buttons row hosts Reset, the eye dropper and OK.
 
 ## API Reference
 
-### `color_picker` (shortcut)
+### Shortcuts
 
 ```rust
-color_picker(show_picker, color, underlay, on_cancel, on_submit)
-color_picker_with_change(show_picker, color, underlay, on_cancel, on_submit, on_color_change)
+// Inline
+color_picker(color, on_cancel, on_submit)
+color_picker_with_change(color, on_cancel, on_submit, on_color_change)
+
+// Floating window
+floating_color_picker(show_picker, color, underlay, on_cancel, on_submit)
+floating_color_picker_with_change(show_picker, color, underlay, on_cancel, on_submit, on_color_change)
 ```
 
-### `ColorPicker`
+### `ColorPicker` (inline)
 
 ```rust
-ColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
+ColorPicker::new(color, on_cancel, on_submit)
 
 // Builder methods
     .on_color_change(callback)    // Fn(Color) -> Message, real-time updates
-    .position(position)           // overlay Position (default: centered)
+    .dropper_buffer(buffer)       // enable the eye dropper (DropperBuffer)
+    .on_dropper_capture(f)        // Fn() -> Message, capture request
     .style(style_fn)              // Fn(&Theme, Status) -> Style
     .class(class)                 // Catalog class
 ```
 
-The struct also implements `From<ColorPicker> for Element`, so `.into()` works everywhere.
-
-### `State`
+### `FloatingColorPicker` (window)
 
 ```rust
-State::new(color)   // New state for a picker widget
-state.reset()       // Reset the state's color/focus
+FloatingColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
+
+// Builder methods
+    .on_color_change(callback)    // Fn(Color) -> Message, real-time updates
+    .dropper_buffer(buffer)       // enable the eye dropper (DropperBuffer)
+    .on_dropper_capture(f)        // Fn() -> Message, capture request
+    .position(position)           // initial position strategy (default: centered over underlay)
+    .style(style_fn)              // Fn(&Theme, Status) -> Style
+    .class(class)                 // Catalog class
+```
+
+Both structs implement `From<...> for Element`, so `.into()` works everywhere.
+
+### State
+
+```rust
+State::new(color)         // New state for an inline picker
+state.reset()             // Reset the state's color/focus
+
+FloatingState::new(color) // New state for a floating picker
+floating_state.reset()    // Reset the state's color/focus
 ```
 
 Hex parsing (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA` with optional `#`) and HSV conversion are implemented internally by the widget; they are not part of the public API.
