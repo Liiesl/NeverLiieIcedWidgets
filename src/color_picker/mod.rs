@@ -161,6 +161,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     /// Builds the transient dialog content view from shared references.
     ///
@@ -356,6 +358,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     fn tag(&self) -> Tag {
         Tag::of::<State>()
@@ -532,6 +536,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     fn from(color_picker: ColorPicker<'a, Message, Theme>) -> Self {
         Element::new(color_picker)
@@ -553,6 +559,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
     F: 'static + Fn(Color) -> Message,
 {
     ColorPicker::new(color, on_cancel, on_submit)
@@ -575,6 +583,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
     F: 'static + Fn(Color) -> Message,
     G: 'static + Fn(Color) -> Message,
 {
@@ -654,6 +664,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     /// Creates a new [`FloatingColorPicker`] wrapping around the given underlay.
     ///
@@ -818,6 +830,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     fn tag(&self) -> Tag {
         Tag::of::<FloatingState>()
@@ -989,6 +1003,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
 {
     fn from(color_picker: FloatingColorPicker<'a, Message, Theme>) -> Self {
         Element::new(color_picker)
@@ -1013,6 +1029,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
     F: 'static + Fn(Color) -> Message,
 {
     FloatingColorPicker::new(show_picker, color, underlay, on_cancel, on_submit)
@@ -1038,6 +1056,8 @@ where
         + iced::widget::button::Catalog
         + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
+    for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+        From<iced::widget::text_input::StyleFn<'c, Theme>>,
     F: 'static + Fn(Color) -> Message,
     G: 'static + Fn(Color) -> Message,
 {

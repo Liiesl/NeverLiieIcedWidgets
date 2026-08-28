@@ -5,7 +5,10 @@
 //! (tabs, sliders, hex input, swatches, previews) inspired by the
 //! `BetterColorDialog` reference implementation.
 
-use iced::{Background, Color, Theme};
+use iced::{
+    widget::text_input::{self, Style as TextInputStyle},
+    Background, Color, Theme,
+};
 
 /// Linearly interpolates between two colors, clamping `t` to `0..=1`.
 fn lerp(a: Color, b: Color, t: f32) -> Color {
@@ -307,6 +310,58 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
         },
         _ => base,
     }
+}
+
+/// The [`text_input::Style`] for the hex and channel value fields of the
+/// color picker.
+///
+/// Uses the picker's palette so the editable text is `text_primary`
+/// (opaque white), not the muted `text_secondary` (`#BBBBBB` / `a:0.75`) or
+/// the default `text_input` fallback `secondary.base` which appears washed
+/// out inside the dark dialog. Background/border are derived from the
+/// dialog's panel colors so the inputs blend with the picker UI while
+/// remaining high-contrast.
+///
+/// Generic over `Theme` so it can be used from the generic
+/// `ColorPickerOverlay<Theme>` (which is `Theme: Catalog + text_input::Catalog`).
+#[must_use]
+pub fn text_input<Theme>(theme: &Theme, status: text_input::Status) -> TextInputStyle
+where
+    Theme: Catalog + text_input::Catalog,
+{
+    // Picker style for the current theme (provides text_primary / text_secondary).
+    let picker = <Theme as Catalog>::style(
+        theme,
+        &<Theme as Catalog>::default(),
+        Status::Active,
+    );
+
+    // Base text_input style for the current theme/status, then override the
+    // muted fields. This preserves the theme's background/border/selection
+    // logic while forcing the value to be high-contrast.
+    let base = <Theme as text_input::Catalog>::style(
+        theme,
+        &<Theme as text_input::Catalog>::default(),
+        status,
+    );
+
+    // Always use the picker's primary text for the editable value, even for
+    // `Disabled` (the overlay recreates the widget each frame, so the first
+    // draw may use `Disabled` before `last_status` is set, which would
+    // otherwise appear muted).
+    let mut style = TextInputStyle {
+        value: picker.text_primary,
+        placeholder: picker.text_secondary,
+        icon: picker.text_secondary,
+        ..base
+    };
+
+    // For Disabled, keep readability (value already forced to primary).
+    if let text_input::Status::Disabled = status {
+        style.placeholder = picker.text_secondary;
+    }
+
+    style
 }
 
 #[cfg(test)]
