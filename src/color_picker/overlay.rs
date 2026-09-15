@@ -3031,6 +3031,36 @@ where
             shell.capture_event();
             shell.request_redraw();
         }
+
+        // Full modal block: while the floating window is open, nothing
+        // underneath may receive mouse hits. `mouse_interaction` below
+        // already reports `Idle` everywhere so the base tree gets an
+        // `Unavailable` cursor; here we swallow the events themselves so
+        // `UserInterface` never forwards them to the base widgets.
+        // Cursor moves are only swallowed over the dialog (or while
+        // dragging) so cursor-following `Position`s tracked in
+        // `FloatingColorPicker::update` keep working.
+        match event {
+            Event::Mouse(
+                mouse::Event::ButtonPressed(_)
+                | mouse::Event::ButtonReleased(_)
+                | mouse::Event::WheelScrolled { .. },
+            )
+            | Event::Touch(
+                touch::Event::FingerPressed { .. }
+                | touch::Event::FingerLifted { .. }
+                | touch::Event::FingerLost { .. },
+            ) => {
+                shell.capture_event();
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. })
+            | Event::Touch(touch::Event::FingerMoved { .. }) => {
+                if cursor.is_over(dialog_bounds) || self.is_dragging() {
+                    shell.capture_event();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn mouse_interaction(
@@ -3063,7 +3093,10 @@ where
             interaction = interaction.max(mouse::Interaction::Grabbing);
         }
 
-        interaction
+        // Modal: report `Idle` everywhere else so the base tree receives an
+        // `Unavailable` cursor and loses hover while the picker is open.
+        // This overlay only exists while `show_picker` is true.
+        interaction.max(mouse::Interaction::Idle)
     }
 
     fn operate(
