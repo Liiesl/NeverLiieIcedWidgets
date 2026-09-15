@@ -7,6 +7,7 @@ edition = "2024"
 iced = { version = "0.14", features = ["default", "advanced", "image", "svg"] }
 num-traits = "0.2"
 unicode-segmentation = "1.11"
+bytes = "1"
 
 # Native dependency of the `title_bar` widget. Used exclusively for the
 # `WM_NCHITTEST` subclass that gives the custom title bar its Windows 11
