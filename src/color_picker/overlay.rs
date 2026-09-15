@@ -444,7 +444,11 @@ where
         class: &'a <Theme as style::Catalog>::Class<'b>,
         tree: &'a mut Tree,
         viewport: Rectangle,
-    ) -> Self {
+    ) -> Self
+    where
+        for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+            From<iced::widget::text_input::StyleFn<'c, Theme>>,
+    {
         let (dropper_content, dropper_font) = dropper_icon();
         let (submit_content, submit_font) = ok_icon();
 
@@ -453,12 +457,16 @@ where
         let hex_input = TextInput::new("", unsafe { &(*state_ptr).hex_input })
             .padding([4, 8])
             .size(13)
+            .style(style::text_input)
             .on_input(move |text: String| {
                 unsafe { (*state_ptr).hex_input = text; }
                 hex_fake.clone()
             });
         let mut value_inputs = std::array::from_fn(|_| {
-            TextInput::new("", "").padding([3, 4]).size(13)
+            TextInput::new("", "")
+                .padding([3, 4])
+                .size(13)
+                .style(style::text_input)
         });
         for (i, text_input) in value_inputs.iter_mut().enumerate() {
             let slot: *mut String = unsafe { &mut (*state_ptr).value_inputs[i] };
@@ -467,6 +475,7 @@ where
                 .padding([3, 4])
                 .size(13)
                 .width(Length::Fixed(VALUE_WIDTH))
+                .style(style::text_input)
                 .on_input(move |text: String| {
                     unsafe { *slot = text; }
                     fake.clone()
@@ -483,6 +492,7 @@ where
             .padding([4, 8])
             .size(13)
             .width(Length::Fill)
+            .style(style::text_input)
             .on_input({
                 let on_input_fake = on_cancel.clone();
                 move |text: String| {
@@ -2829,7 +2839,11 @@ where
         class: &'a <Theme as style::Catalog>::Class<'b>,
         tree: &'a mut Tree,
         viewport: Rectangle,
-    ) -> Self {
+    ) -> Self
+    where
+        for<'c> <Theme as iced::widget::text_input::Catalog>::Class<'c>:
+            From<iced::widget::text_input::StyleFn<'c, Theme>>,
+    {
         Self {
             content: ColorPickerOverlay::new(
                 state,
