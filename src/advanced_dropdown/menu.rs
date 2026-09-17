@@ -1592,10 +1592,15 @@ where
     }
 
     fn move_hover(&mut self, mask: &[bool], delta: isize) {
+        // Keyboard navigation skips non-selectable rows (labels,
+        // separators): arrows move directly between items so every stop
+        // is actionable (Enter always selects).
         let visible: Vec<usize> = mask
             .iter()
             .enumerate()
-            .filter(|(_, visible)| **visible)
+            .filter(|(i, visible)| {
+                **visible && matches!(self.options[*i], MenuItem::Item(_))
+            })
             .map(|(i, _)| i)
             .collect();
 
