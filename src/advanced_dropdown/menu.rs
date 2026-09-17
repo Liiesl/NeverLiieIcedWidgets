@@ -1578,23 +1578,106 @@ where
     fn compute_mask(&self) -> Vec<bool> {
         let query = self.search.to_lowercase();
 
-        let mut mask = vec![false; self.options.len()];
-        let mut pending = false;
+        // Unfiltered: show the full structure, including section chrome
+        // (section labels and separators). The legacy reverse-`pending` pass
+        // below would hide every `Label`/`Separator` that is not directly
+        // above a matching item, which breaks sectioned menus such as the
+        // font picker's "Featured" / "All fonts" groups.
+        if query.is_empty() {
+            return vec![true; self.options.len()];
+        }
 
-        for (i, entry) in self.options.iter().enumerate().rev() {
-            match entry {
-                MenuItem::Item(item) => {
-                    if query.is_empty()
-                        || item.label().to_lowercase().contains(&query)
-                        || item.value().to_string().to_lowercase().contains(&query)
-                    {
-                        mask[i] = true;
-                        pending = true;
+        let mut item_vis = vec![false; self.options.len()];
+        for (i, entry) in self.options.iter().enumerate() {
+            if let MenuItem::Item(item) = entry {
+                if item.label().to_lowercase().contains(&query)
+                    || item.value().to_string().to_lowercase().contains(&query)
+                {
+                    item_vis[i] = true;
+                }
+            }
+        }
+
+        // A section header is a `Label` immediately followed by a
+        // `Separator` (e.g. "Featured" + divider), as opposed to a family
+        // header, which is a `Label` immediately followed by its `Item`.
+        let headers: Vec<usize> = (0..self.options.len())
+            .filter(|&i| {
+                matches!(self.options[i], MenuItem::Label(_))
+                    && matches!(self.options.get(i + 1), Some(MenuItem::Separator))
+            })
+            .collect();
+
+        // No section headers: legacy behavior — each `Label`/`Separator` is
+        // shown only when the item group directly below it matches.
+        if headers.is_empty() {
+            let mut mask = vec![false; self.options.len()];
+            let mut pending = false;
+            for (i, entry) in self.options.iter().enumerate().rev() {
+                match entry {
+                    MenuItem::Item(_) => {
+                        if item_vis[i] {
+                            mask[i] = true;
+                            pending = true;
+                        }
+                    }
+                    MenuItem::Label(_) | MenuItem::Separator => {
+                        mask[i] = pending;
+                        pending = false;
                     }
                 }
-                MenuItem::Label(_) | MenuItem::Separator => {
-                    mask[i] = pending;
-                    pending = false;
+            }
+            return mask;
+        }
+
+        // Sectioned menu: a section spans from its header to the next
+        // section header (or the end). A section is non-empty when any of
+        // its items matches; its header row and the divider directly below
+        // it stay visible exactly then, so searching keeps the "Featured" /
+        // "All fonts" groups while hiding empty ones.
+        let section_has_match: Vec<bool> = headers
+            .iter()
+            .enumerate()
+            .map(|(h, &start)| {
+                let end = headers.get(h + 1).copied().unwrap_or(self.options.len());
+                ((start + 1)..end).any(|i| item_vis[i])
+            })
+            .collect();
+        let header_of = |index: usize| -> Option<usize> {
+            headers.iter().rposition(|&h| h < index)
+        };
+
+        let mut mask = vec![false; self.options.len()];
+        for (i, entry) in self.options.iter().enumerate() {
+            match entry {
+                MenuItem::Item(_) => {
+                    mask[i] = item_vis[i];
+                }
+                MenuItem::Label(_) => {
+                    if let Some(h) = headers.iter().position(|&hdr| hdr == i) {
+                        mask[i] = section_has_match[h];
+                    } else if matches!(self.options.get(i + 1), Some(MenuItem::Item(_))) {
+                        // Family header: visible with its own item.
+                        mask[i] = item_vis[i + 1];
+                    } else if let Some(h) = header_of(i) {
+                        // Degenerate label (not followed by an item): fall
+                        // back to its section's visibility.
+                        mask[i] = section_has_match[h];
+                    }
+                }
+                MenuItem::Separator => {
+                    if let Some(h) = headers.iter().position(|&hdr| hdr + 1 == i) {
+                        // Divider directly below a section header: visible
+                        // with its section.
+                        mask[i] = section_has_match[h];
+                    } else {
+                        // Divider between groups: visible only when matches
+                        // exist on both sides, so a lone non-empty section
+                        // is not framed by stale rules.
+                        let before = item_vis[..i].iter().any(|&v| v);
+                        let after = item_vis[i + 1..].iter().any(|&v| v);
+                        mask[i] = before && after;
+                    }
                 }
             }
         }

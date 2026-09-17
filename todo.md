@@ -11,7 +11,7 @@
 - [x] Button - clickable action trigger (iced: `button` - complete, multiple styles: primary/secondary/success/warning/danger/text/subtle)
 - [ ] ToggleButton - on/off state button (missing)
 - [ ] IconButton - button with icon only (missing, can be done with `button(icon)` but no dedicated type)
-- [ ] SplitButton - button with dropdown menu (missing)
+- [x] SplitButton - button with dropdown menu (`src/split_button/` - icon options via shared Item/MenuItem model, main area executes selection, arrow opens menu)
 
 ## Selection
 - [x] Checkbox - multi-select toggle (iced: `checkbox` - complete, multiple styles, customizable icon)
