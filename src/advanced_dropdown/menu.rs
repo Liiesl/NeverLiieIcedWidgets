@@ -1000,6 +1000,7 @@ where
     T: Clone + ToString,
     Theme: Catalog,
     Renderer: text::Renderer,
+    Renderer::Font: Clone,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<ListState>()
@@ -1327,15 +1328,14 @@ where
                             );
                         }
 
+                        let row_font = item.preview_font().or_else(|| self.font.clone()).unwrap_or_else(|| renderer.default_font());
                         renderer.fill_text(
                             Text {
                                 content: item.label(),
                                 bounds: Size::new(f32::INFINITY, row_bounds.height),
                                 size: text_size,
                                 line_height: self.text_line_height,
-                                font: self
-                                    .font
-                                    .unwrap_or_else(|| renderer.default_font()),
+                                font: row_font,
                                 align_x: text::Alignment::Default,
                                 align_y: alignment::Vertical::Center,
                                 shaping: self.text_shaping,
@@ -1494,6 +1494,7 @@ where
                 MenuItem::Item(item) => {
                     if query.is_empty()
                         || item.label().to_lowercase().contains(&query)
+                        || item.value().to_string().to_lowercase().contains(&query)
                     {
                         mask[i] = true;
                         pending = true;
