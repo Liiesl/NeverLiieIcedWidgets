@@ -4,7 +4,9 @@ use iced::advanced::mouse;
 use iced::advanced::overlay;
 use iced::advanced::renderer;
 use iced::advanced::text::{self, Text};
+use iced::advanced::widget::operation::Scrollable as ScrollableOperation;
 use iced::advanced::widget::tree::{self, Tree};
+use iced::advanced::widget::{Id, Operation};
 use iced::advanced::{Clipboard, Shell, Widget};
 use iced::border::{self, Border};
 use iced::widget::scrollable::{self, Scrollable};
@@ -257,6 +259,7 @@ where
     viewport: Rectangle,
     tree: &'a mut Tree,
     list: Scrollable<'a, Message, Theme, Renderer>,
+    scroll_id: Id,
     search: Option<&'a mut String>,
     search_input: Option<TextInput<'a, SearchMessage, Theme, Renderer>>,
     search_tree: Option<&'a mut Option<Tree>>,
@@ -407,6 +410,11 @@ where
         } else {
             menu_height
         };
+        // Unique per overlay build so the follow-selection operation below
+        // only ever targets this menu's list (several dropdowns can be open
+        // at once). The `operate` call happens synchronously against this
+        // same widget instance, so a fresh id per build still matches.
+        let scroll_id = Id::unique();
         let list = Scrollable::new(List {
             options,
             hovered_option,
@@ -421,7 +429,8 @@ where
             class,
             search: search.as_ref().map(|s| s.as_str()).unwrap_or("").to_owned(),
         })
-        .height(effective_height);
+        .height(effective_height)
+        .id(scroll_id.clone());
 
         tree.diff(&list as &dyn Widget<_, _, _>);
 
@@ -469,6 +478,7 @@ where
             viewport,
             tree,
             list,
+            scroll_id,
             search,
             search_input,
             search_tree,
@@ -485,6 +495,54 @@ where
             target_height,
             class,
             menu_max_height,
+        }
+    }
+}
+
+/// Scrolls the menu list just enough to bring a keyboard-selected row
+/// into view: nothing moves while the row is visible, otherwise the list
+/// scrolls by the minimal amount. Runs synchronously inside the overlay
+/// through the public [`Operation`] machinery (the scrollable `State`
+/// itself is private to iced).
+struct EnsureVisible {
+    target: Id,
+    row_top: f32,
+    row_bottom: f32,
+}
+
+impl Operation for EnsureVisible {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _content_bounds: Rectangle,
+        translation: Vector,
+        state: &mut dyn ScrollableOperation,
+    ) {
+        if Some(&self.target) != id {
+            return;
+        }
+
+        // `translation` is the current scroll offset (default Start anchor:
+        // content is drawn shifted up by it).
+        let offset_y = translation.y;
+        let target_y = if self.row_top < offset_y {
+            Some(self.row_top)
+        } else if self.row_bottom > offset_y + bounds.height {
+            Some(self.row_bottom - bounds.height)
+        } else {
+            None
+        };
+
+        if let Some(y) = target_y {
+            state.scroll_to(scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y.max(0.0)),
+            });
         }
     }
 }
@@ -711,6 +769,23 @@ where
                 shell,
                 &bounds,
             );
+
+            // Arrow-key navigation follows the selection: scroll the newly
+            // hovered row into view when it left the visible area.
+            let pending = self
+                .tree
+                .children
+                .first_mut()
+                .map(|child| child.state.downcast_mut::<ListState>())
+                .and_then(|state| state.pending_scroll.take());
+            if let Some((row_top, row_bottom)) = pending {
+                let mut ensure = EnsureVisible {
+                    target: self.scroll_id.clone(),
+                    row_top,
+                    row_bottom,
+                };
+                self.list.operate(self.tree, list_layout, renderer, &mut ensure);
+            }
         }
 
         if let Some(footer_layout) = children.next() {
@@ -992,6 +1067,10 @@ struct ListState {
     mask: Vec<bool>,
     no_matches: bool,
     last_search: String,
+    /// Content-space `(top, bottom)` of the keyboard-selected row, consumed
+    /// by the overlay to scroll it into view. Set only by arrow-key
+    /// navigation (the mouse selection is always under the cursor).
+    pending_scroll: Option<(f32, f32)>,
 }
 
 impl<T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -1012,6 +1091,7 @@ where
             mask: Vec::new(),
             no_matches: false,
             last_search: String::new(),
+            pending_scroll: None,
         })
     }
 
@@ -1193,11 +1273,23 @@ where
                 match key.as_ref() {
                     keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
                         self.move_hover(&state.mask, 1);
+                        let item_height = f32::from(
+                            self.text_line_height.to_absolute(text_size),
+                        ) + self.padding.y();
+                        state.pending_scroll = (*self.hovered_option).and_then(
+                            |index| self.visible_row_range(index, &state.mask, item_height),
+                        );
                         shell.request_redraw();
                         shell.capture_event();
                     }
                     keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
                         self.move_hover(&state.mask, -1);
+                        let item_height = f32::from(
+                            self.text_line_height.to_absolute(text_size),
+                        ) + self.padding.y();
+                        state.pending_scroll = (*self.hovered_option).and_then(
+                            |index| self.visible_row_range(index, &state.mask, item_height),
+                        );
                         shell.request_redraw();
                         shell.capture_event();
                     }
@@ -1633,6 +1725,38 @@ where
         };
 
         *self.hovered_option = Some(new_index);
+    }
+
+    /// Content-space `(top, bottom)` of the visible row `index`, using the
+    /// same row heights as layout. Returns `None` when the index is not a
+    /// visible selectable item.
+    fn visible_row_range(
+        &self,
+        index: usize,
+        mask: &[bool],
+        item_height: f32,
+    ) -> Option<(f32, f32)> {
+        let mut y = 0.0f32;
+
+        for (i, entry) in self.options.iter().enumerate() {
+            if !mask.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+
+            let height = match entry {
+                MenuItem::Item(_) | MenuItem::Label(_) => item_height,
+                MenuItem::Separator => SEPARATOR_HEIGHT,
+            };
+
+            if i == index {
+                return matches!(entry, MenuItem::Item(_))
+                    .then_some((y, y + height));
+            }
+
+            y += height;
+        }
+
+        None
     }
 }
 
