@@ -3609,6 +3609,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "split-button-test"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "neverliie-iced-widgets",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

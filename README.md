@@ -19,6 +19,7 @@ This library provides additional widgets for iced that are not available in the 
 | [Ellipsis Text](docs/ellipsis_text.md) | Line-clamped text with ellipsis (`…`) truncation | Stable |
 | [Color Picker](docs/color_picker.md) | Inline color picker widget or draggable floating window dialog with hue ring, RGB/HSV sliders, swatches and recent colors | Stable |
 | [Title Bar](docs/title_bar.md) | Cross-platform custom window frame with native Windows 11 caption semantics (Snap Layouts, accent border) | Stable |
+| [Split Button](docs/split_button.md) | Split button with pick-list dropdown: main area executes the selection, arrow opens the menu | Stable |
 
 ## Installation
 
@@ -90,6 +91,9 @@ cargo run -p color-picker-test
 
 # Custom title bar / window frame (menus in the bar, Snap Layouts, resize, theme switching)
 cargo run -p title-bar-test
+
+# Split button with pick-list dropdown (main executes, arrow opens menu)
+cargo run -p split-button-test
 
 # Launcher menu for the demos above
 cargo run -p launcher
