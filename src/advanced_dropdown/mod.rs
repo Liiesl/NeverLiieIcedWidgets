@@ -103,7 +103,10 @@ pub(crate) const SEPARATOR_HEIGHT: f32 = 9.0;
 /// [`Item`]: struct.Item
 /// [`Label`]: enum.MenuItem.html#variant.Label
 /// [`Separator`]: enum.MenuItem.html#variant.Separator
-pub enum MenuItem<'a, T, Message, Theme, Renderer> {
+pub enum MenuItem<'a, T, Message, Theme, Renderer>
+where
+    Renderer: text::Renderer,
+{
     /// A selectable item with a value, label and optional icon.
     Item(Item<'a, T, Message, Theme, Renderer>),
     /// A non-selectable group label shown as a header row.
@@ -116,15 +119,20 @@ pub enum MenuItem<'a, T, Message, Theme, Renderer> {
 /// optional icon.
 ///
 /// Create with [`Item::new`] or [`Item::with_value`].
-pub struct Item<'a, T, Message, Theme, Renderer> {
+pub struct Item<'a, T, Message, Theme, Renderer>
+where
+    Renderer: text::Renderer,
+{
     value: T,
     label: Option<String>,
     icon: Option<Element<'a, Message, Theme, Renderer>>,
+    font: Option<Renderer::Font>,
 }
 
 impl<'a, T, Message, Theme, Renderer> Item<'a, T, Message, Theme, Renderer>
 where
     T: ToString,
+    Renderer: text::Renderer,
 {
     /// Creates a new [`Item`] with the given value and label.
     pub fn new(value: T, label: impl Into<String>) -> Self {
@@ -132,6 +140,7 @@ where
             value,
             label: Some(label.into()),
             icon: None,
+            font: None,
         }
     }
 
@@ -142,6 +151,7 @@ where
             value,
             label: None,
             icon: None,
+            font: None,
         }
     }
 
@@ -156,6 +166,25 @@ where
     ) -> Self {
         self.icon = Some(icon.into());
         self
+    }
+
+    /// Sets the font used to render this item's label inside the menu.
+    ///
+    /// Used for font-picker previews: the label (the family name) is drawn
+    /// in the family itself while the group `Label` above it stays in the
+    /// UI font. Falls back to the menu font when unset.
+    #[must_use]
+    pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
+        self.font = Some(font.into());
+        self
+    }
+
+    /// Returns the preview font of this item, if set.
+    pub fn preview_font(&self) -> Option<Renderer::Font>
+    where
+        Renderer::Font: Clone,
+    {
+        self.font.clone()
     }
 
     /// Returns the value of this item.
@@ -307,6 +336,7 @@ pub struct AdvancedDropdown<
     on_select: Box<dyn Fn(T) -> Message + 'a>,
     on_open: Option<Message>,
     on_close: Option<Message>,
+    on_option_hovered: Option<Box<dyn Fn(T) -> Message + 'a>>,
     footers: Vec<Footer<'a, Message, Theme, Renderer>>,
     options: L,
     placeholder: Option<String>,
@@ -352,6 +382,7 @@ where
             on_select: Box::new(on_select),
             on_open: None,
             on_close: None,
+            on_option_hovered: None,
             footers: Vec::new(),
             options,
             placeholder: None,
@@ -466,6 +497,16 @@ where
     /// is closed.
     pub fn on_close(mut self, on_close: Message) -> Self {
         self.on_close = Some(on_close);
+        self
+    }
+
+    /// Sets a callback producing a message when an option is hovered.
+    ///
+    /// Used by pickers with expensive per-option setup (e.g. font previews
+    /// that load the family on demand): hovering a row can trigger the load
+    /// without changing the selection.
+    pub fn on_option_hovered(mut self, on_hovered: impl Fn(T) -> Message + 'a) -> Self {
+        self.on_option_hovered = Some(Box::new(on_hovered));
         self
     }
 
@@ -1108,7 +1149,7 @@ where
 
                     (on_select)(option)
                 },
-                None,
+                self.on_option_hovered.as_deref(),
                 footers,
                 &self.menu_class,
             )
@@ -1180,7 +1221,7 @@ fn ensure_icon_trees<'a, T, Message, Theme, Renderer>(
     icon_trees: &mut Vec<Option<Tree>>,
     options: &mut [MenuItem<'a, T, Message, Theme, Renderer>],
 ) where
-    Renderer: renderer::Renderer,
+    Renderer: renderer::Renderer + text::Renderer,
 {
     if icon_trees.len() != options.len() {
         icon_trees.resize_with(options.len(), || None);
