@@ -4830,11 +4830,16 @@ fn draw_dropper_lens(
         Background::Color(style.lens_backdrop),
     );
 
-    // Zoomed pixel grid.
+    // Zoomed pixel grid. Quantize the cursor to its physical source pixel
+    // first, then offset in whole physical pixels: offsetting in logical
+    // pixels (`hovered + dx`) skips pixels at scale != 1 and lets the
+    // sub-pixel fraction of the cursor reshuffle the grid while moving
+    // inside a single source pixel.
     let center = LENS_SRC_RADIUS;
     let pitch = LENS_CELL + LENS_GAP;
     let grid_origin = Point::new(backdrop.x + LENS_PAD, backdrop.y + LENS_PAD);
     let radius = 2.0;
+    let center_px = frame.to_physical(hovered.x, hovered.y);
 
     for dy in -center..=center {
         for dx in -center..=center {
@@ -4845,8 +4850,8 @@ fn draw_dropper_lens(
                 ),
                 Size::new(LENS_CELL, LENS_CELL),
             );
-            let color = frame
-                .sample(hovered.x + dx as f32, hovered.y + dy as f32)
+            let color = center_px
+                .and_then(|(pcx, pcy)| frame.sample_pixel(pcx + dx, pcy + dy))
                 .unwrap_or(style.checker_color_2);
 
             renderer.fill_quad(
@@ -4903,7 +4908,9 @@ fn draw_dropper_lens(
         Background::Color(style.lens_pill_background),
     );
 
-    if let Some(color) = frame.sample(hovered.x, hovered.y) {
+    if let Some((pcx, pcy)) = center_px
+        && let Some(color) = frame.sample_pixel(pcx, pcy)
+    {
         renderer.fill_text(
             Text {
                 content: rgb_hex_string(color),
