@@ -89,23 +89,28 @@ impl Frame {
         }
     }
 
-    /// Samples the sRGB color of the pixel under the given logical window
-    /// coordinates. The returned color is always opaque: the alpha channel
-    /// of a rendered framebuffer is not visually meaningful.
+    /// Maps logical window coordinates onto physical frame pixel indices.
     ///
-    /// Returns `None` when the point lies outside the captured area or the
-    /// frame has no usable scale factor.
+    /// Returns `None` only when the frame has no usable scale factor. The
+    /// returned indices may lie outside the captured area; use
+    /// [`sample_pixel`](Self::sample_pixel) for bounds-checked sampling.
     #[must_use]
-    pub fn sample(&self, x: f32, y: f32) -> Option<Color> {
+    pub fn to_physical(&self, x: f32, y: f32) -> Option<(i32, i32)> {
         if !(self.scale_factor > 0.0 && self.scale_factor.is_finite()) {
             return None;
         }
         let scale = self.scale_factor;
 
-        let px = (x * scale).floor();
-        let py = (y * scale).floor();
+        Some(((x * scale).floor() as i32, (y * scale).floor() as i32))
+    }
 
-        if !(px >= 0.0 && py >= 0.0 && px < self.width as f32 && py < self.height as f32) {
+    /// Samples the sRGB color of the physical frame pixel `(px, py)`.
+    /// The returned color is always opaque.
+    ///
+    /// Returns `None` when the pixel lies outside the captured area.
+    #[must_use]
+    pub fn sample_pixel(&self, px: i32, py: i32) -> Option<Color> {
+        if px < 0 || py < 0 || px >= self.width as i32 || py >= self.height as i32 {
             return None;
         }
 
@@ -118,6 +123,18 @@ impl Frame {
             b: f32::from(bytes[2]) / 255.0,
             a: 1.0,
         })
+    }
+
+    /// Samples the sRGB color of the pixel under the given logical window
+    /// coordinates. The returned color is always opaque: the alpha channel
+    /// of a rendered framebuffer is not visually meaningful.
+    ///
+    /// Returns `None` when the point lies outside the captured area or the
+    /// frame has no usable scale factor.
+    #[must_use]
+    pub fn sample(&self, x: f32, y: f32) -> Option<Color> {
+        let (px, py) = self.to_physical(x, y)?;
+        self.sample_pixel(px, py)
     }
 }
 

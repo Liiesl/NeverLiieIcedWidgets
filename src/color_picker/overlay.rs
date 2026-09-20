@@ -1598,20 +1598,21 @@ where
             }
 
             // Strip cells of the active set; scrolled-out parts are not
-            // clickable.
+            // clickable. `position_in` is relative, so hit-test with the
+            // absolute `is_over` plus a viewport intersection guard.
             let page_bounds = page_layout.bounds();
-            if let Some(position) = cursor.position_in(page_bounds) {
-                for (i, cell) in page_layout.children().enumerate() {
-                    if cell.bounds().contains(position)
-                        && let Some(color) = self
-                            .state
-                            .swatch_sets
-                            .get(self.state.active_swatch_tab)
-                            .and_then(|set| set.colors.get(i))
-                    {
-                        self.select_color_from_swatch(*color, shell);
-                        return true;
-                    }
+            for (i, cell) in page_layout.children().enumerate() {
+                let cell_bounds = cell.bounds();
+                if cursor.is_over(cell_bounds)
+                    && page_bounds.intersects(&cell_bounds)
+                    && let Some(color) = self
+                        .state
+                        .swatch_sets
+                        .get(self.state.active_swatch_tab)
+                        .and_then(|set| set.colors.get(i))
+                {
+                    self.select_color_from_swatch(*color, shell);
+                    return true;
                 }
             }
 
@@ -2080,15 +2081,15 @@ where
         ) {
             // Scrolled-out parts of the strip are not clickable.
             let viewport = recent_grid_layout.bounds();
-            if let Some(position) = cursor.position_in(viewport) {
-                for (i, cell) in recent_grid_layout.children().enumerate() {
-                    if cell.bounds().contains(position)
-                        && let Some(color) = self.state.recent_colors.get(i)
-                    {
-                        self.select_color_from_swatch(*color, shell);
-                        captured = true;
-                        break;
-                    }
+            for (i, cell) in recent_grid_layout.children().enumerate() {
+                let cell_bounds = cell.bounds();
+                if cursor.is_over(cell_bounds)
+                    && viewport.intersects(&cell_bounds)
+                    && let Some(color) = self.state.recent_colors.get(i)
+                {
+                    self.select_color_from_swatch(*color, shell);
+                    captured = true;
+                    break;
                 }
             }
         }
@@ -2672,13 +2673,18 @@ where
             } else {
                 bounds
             };
-            draw_dropper_lens(
-                renderer,
-                frame,
-                self.state.dropper_cursor,
-                clamp_bounds,
-                &style_sheet[&StyleState::Active],
-            );
+            // Own layer so the lens composites above the swatch/recent
+            // `with_layer` strips, which would otherwise paint over anything
+            // drawn into the base layer afterwards.
+            renderer.with_layer(clamp_bounds, |renderer| {
+                draw_dropper_lens(
+                    renderer,
+                    frame,
+                    self.state.dropper_cursor,
+                    clamp_bounds,
+                    &style_sheet[&StyleState::Active],
+                );
+            });
         }
     }
 }
@@ -2774,7 +2780,15 @@ where
 
     fn draw(&self, renderer: &mut Renderer, theme: &Theme, _style: &renderer::Style, _layout: Layout<'_>, _cursor: Cursor) {
         let style = style::Catalog::style(theme, self.class, Status::Active);
-        draw_dropper_lens(renderer, self.frame, self.cursor, self.clamp_bounds, &style);
+        let frame = self.frame;
+        let cursor = self.cursor;
+        let clamp_bounds = self.clamp_bounds;
+        // Own layer so the lens composites above the swatch/recent
+        // `with_layer` strips, which would otherwise paint over anything
+        // drawn into the base layer afterwards.
+        renderer.with_layer(clamp_bounds, |renderer| {
+            draw_dropper_lens(renderer, frame, cursor, clamp_bounds, &style);
+        });
     }
 }
 
@@ -4816,11 +4830,16 @@ fn draw_dropper_lens(
         Background::Color(style.lens_backdrop),
     );
 
-    // Zoomed pixel grid.
+    // Zoomed pixel grid. Quantize the cursor to its physical source pixel
+    // first, then offset in whole physical pixels: offsetting in logical
+    // pixels (`hovered + dx`) skips pixels at scale != 1 and lets the
+    // sub-pixel fraction of the cursor reshuffle the grid while moving
+    // inside a single source pixel.
     let center = LENS_SRC_RADIUS;
     let pitch = LENS_CELL + LENS_GAP;
     let grid_origin = Point::new(backdrop.x + LENS_PAD, backdrop.y + LENS_PAD);
     let radius = 2.0;
+    let center_px = frame.to_physical(hovered.x, hovered.y);
 
     for dy in -center..=center {
         for dx in -center..=center {
@@ -4831,8 +4850,8 @@ fn draw_dropper_lens(
                 ),
                 Size::new(LENS_CELL, LENS_CELL),
             );
-            let color = frame
-                .sample(hovered.x + dx as f32, hovered.y + dy as f32)
+            let color = center_px
+                .and_then(|(pcx, pcy)| frame.sample_pixel(pcx + dx, pcy + dy))
                 .unwrap_or(style.checker_color_2);
 
             renderer.fill_quad(
@@ -4889,7 +4908,9 @@ fn draw_dropper_lens(
         Background::Color(style.lens_pill_background),
     );
 
-    if let Some(color) = frame.sample(hovered.x, hovered.y) {
+    if let Some((pcx, pcy)) = center_px
+        && let Some(color) = frame.sample_pixel(pcx, pcy)
+    {
         renderer.fill_text(
             Text {
                 content: rgb_hex_string(color),
