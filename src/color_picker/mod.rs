@@ -1,13 +1,17 @@
 //! Use a color picker as an input element for picking colors.
 //!
 //! Ported from `iced_aw`'s `widget::color_picker` module, with the dialog
-//! reworked to mirror the PySide6 `BetterColorDialog`:
+//! reworked to a single-column two-tab layout:
 //!
-//! * a hue ring + saturation/value square picker on the left, next to
-//!   RGB(A)/HSV tabbed gradient sliders, value fields and a hex input;
-//! * on the right: Original/New preview panels, tabbed swatch sets (with
-//!   an add-set name prompt and per-set close marks), an add-current-color
-//!   button, a recent colors grid and the Reset/Eyedropper/OK buttons.
+//! * top-level `[Color | Library]` tabs (in the draggable header for the
+//!   floating window, on top for the inline widget);
+//! * Color tab: saturation/value square + hue slider below it, HSV/RGB(A)
+//!   tabbed gradient sliders, value fields and a hex input;
+//! * Library tab: tabbed swatch sets (with an add-set name prompt and
+//!   per-set close marks), an add-current-color button and a recent colors
+//!   grid;
+//! * shared footer in both tabs: Original/New preview panels and the
+//!   Reset/Eyedropper/OK buttons below the hex input.
 //!
 //! The dialog content is available in two shapes:
 //!
@@ -17,9 +21,9 @@
 //!   the element.
 //! * [`FloatingColorPicker`] — wraps an underlay (typically a button) and,
 //!   while shown, spawns the same dialog inside a free-floating window-like
-//!   shell: a draggable header with an empty drag area and a close ("x")
-//!   button. It is still a regular overlay/widget, not a separate OS
-//!   window; the dragged position survives close/reopen.
+//!   shell: a draggable header with `[Color | Library]` tabs, a drag area
+//!   and a close ("x") button. It is still a regular overlay/widget, not a
+//!   separate OS window; the dragged position survives close/reopen.
 //!
 //! Swatches and recent colors are kept in memory only (no persistence),
 //! and all styling is derived from the active iced `Theme` palette.

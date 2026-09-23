@@ -27,3 +27,6 @@ windows-sys = { version = "0.61", features = [
 [workspace]
 members = ["examples/*"]
 exclude = ["iced"]
+
+[profile.dev.package."*"]
+debug = "line-tables-only"

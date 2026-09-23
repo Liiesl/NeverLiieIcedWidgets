@@ -1,15 +1,16 @@
 # Color Picker Widget
 
-A color picker dialog. Ported from `iced_aw`'s `color_picker` module, with the dialog reworked to mirror the PySide6 `BetterColorDialog`: a hue ring and saturation/value square on the left, RGB(A)/HSV tabbed gradient sliders with channel fields and a hex input, and on the right Original/New preview panels, tabbed swatch sets, a recent colors grid and the Reset/Eyedropper/OK buttons (the former Cancel slot now hosts the [eye dropper](#eye-dropper); the floating window keeps its header "x" as a cancel path).
+A color picker dialog. Ported from `iced_aw`'s `color_picker` module, reworked to a single-column two-tab layout: top-level `Color | Library` tabs (in the draggable header for the floating window), a saturation/value square with a hue slider below it, HSV/RGB(A) tabbed gradient sliders with channel fields and a hex input in the Color tab (HSV open by default), swatch sets plus a recent colors grid in the Library tab, and shared Original/New preview panels with the Reset/Eyedropper/OK buttons below the hex input (the former Cancel slot now hosts the [eye dropper](#eye-dropper); the floating window keeps its header "x" as a cancel path).
 
 The dialog comes in two shapes:
 
 | Type | Purpose |
 |------|---------|
 | `ColorPicker` | **Generic inline widget** — plant it into any builder like a regular widget; always visible, no spawn button required |
-| `FloatingColorPicker` | **Floating window mode** — wraps an underlay (typically a button) and spawns the dialog inside a draggable window-like shell with a header (empty drag area + close "x" button) |
+| `FloatingColorPicker` | **Floating window mode** — wraps an underlay (typically a button) and spawns the dialog inside a draggable window-like shell with a header (`Color | Library` tabs + drag area + close "x" button) |
 | `State` / `FloatingState` | Per-widget state: selected color, focus, tab, swatches, recent colors |
 | `ActiveTab` | The active controls tab: `Rgb` or `Hsv` |
+| `PickerTab` | The top-level tab: `Color` or `Library` |
 | `SwatchSet` | A named set of swatch colors shown in the swatch tab bar |
 | `Status` | Style status: Active, Hovered, Pressed, Disabled, Focused, Selected |
 | `StyleState` | Internal style state: Active, Selected, Hovered, Focused |
@@ -114,25 +115,30 @@ Without a position the window first appears centered over the underlay and bounc
 
 ## Dialog Layout
 
-The dialog content is split into two panes:
+The dialog is a single column with two top-level tabs (`Color | Library`,
+in the draggable header for the floating window, on top for the inline
+widget):
 
-### Left Pane
+### Color Tab (raw picking)
 
-- **Hue ring** — a 300px circular ring; drag on the ring band to pick the hue, or scroll the mouse wheel over it to nudge the hue
 - **Saturation/Value square** — drag inside the square to pick saturation (x-axis) and value (y-axis); an outline circle indicates the current position
-- **Controls tab bar** — switch between the `RGB(A)` and `HSV` tabs
+- **Hue slider** — a normal horizontal gradient slider below the square; drag or scroll to pick the hue
+- **Controls tab bar** — switch between the `HSV` and `RGB(A)` tabs (`HSV` is leftmost and default)
 - **Gradient slider bars** — four bars per tab: R, G, B, A on the RGB(A) tab and H, S, V, A on the HSV tab (the alpha bar is always present); drag to adjust, or click to jump
 - **Channel value fields** — seven text inputs (`[R, G, B, A, H, S, V]`); RGB(A) channels and S/V are on the `0..=255` scale, hue on `0..=359`. Values are clamped on input
 - **Hex input** — freeform hex color input, see below
 
-### Right Pane
+### Library Tab
 
-- **Original / New preview panels** — the open-time color vs. the current selection, over a checkerboard pattern (alpha-aware)
 - **Swatch tab bar** — named swatch sets; switch sets by clicking a tab, close a set with its "x" mark, and create a new set via the trailing "+" tab
 - **New swatch set prompt** — typing a name (followed by Enter or the Add button) creates an empty set and selects it; empty names are ignored
 - **Add-current-color button** — inserts the current color at the front of the active swatch set
 - **Recent colors grid** — up to 12 previously submitted colors
-- **Buttons** — Reset (restores the open-time color), Eyedropper (see below), OK
+
+### Shared Footer (both tabs)
+
+- **Original / New preview panels** — the open-time color vs. the current selection, over a checkerboard pattern (alpha-aware)
+- **Buttons below the hex input** — Reset (restores the open-time color), Eyedropper (see below), OK
 
 ## Eye Dropper
 

@@ -4,7 +4,7 @@
 
 use super::{
     color::{
-        clamp_hue, clamp_u8, color_to_hex_argb, hue_from_angle, is_valid_hex, parse_hex_digits,
+        clamp_hue, clamp_u8, color_to_hex_argb, is_valid_hex, parse_hex_digits,
         Hsv,
     },
     dropper::{DropperBuffer, DropperMode, Frame},
@@ -38,8 +38,11 @@ use iced::{
 };
 use std::collections::HashMap;
 
-/// The maximal size of the dialog content.
-const DIALOG_MAX_SIZE: Size = Size::new(640.0, 470.0);
+/// The maximal size of the dialog content (single column).
+#[allow(dead_code)]
+const DIALOG_MAX_SIZE: Size = Size::new(380.0, 700.0);
+/// The fixed width of the single-column content.
+const CONTENT_WIDTH: f32 = 300.0;
 /// The height of the draggable window header of the
 /// [`ColorPickerWindow`]. The header is an empty drag strip with a
 /// close button on the right.
@@ -47,19 +50,31 @@ const HEADER_HEIGHT: f32 = 28.0;
 /// The size of the square close ("x") button inside the window header.
 const CLOSE_BUTTON_SIZE: f32 = 20.0;
 /// The margin around the dialog content (Qt: contentsMargins 15).
+#[allow(dead_code)]
 const OUTER_MARGIN: f32 = 15.0;
 /// The spacing between the left and right pane (Qt: main_h_layout spacing 15).
+#[allow(dead_code)]
 const PANE_SPACING: f32 = 15.0;
-/// The outer dimension of the picker container / hue ring.
+/// The outer dimension of the picker container (legacy two-pane width,
+/// kept for the single-column content width).
+#[allow(dead_code)]
 const RING_DIM: f32 = 300.0;
-/// The width of the hue ring band.
+/// The width of the hue ring band (legacy; the ring is now a slider).
+#[allow(dead_code)]
 const RING_WIDTH: f32 = 30.0;
-/// The padding between the ring band and the ring border.
+/// The padding between the ring band and the ring border (legacy).
+#[allow(dead_code)]
 const RING_PADDING: f32 = 5.0;
 /// The size of the saturation/value square: `int(230 * 0.65)`.
 const SQUARE_DIM: f32 = 149.0;
-/// The inner diameter of the hue ring: `300 - 2 * (30 + 5)`.
+/// The inner diameter of the hue ring (legacy).
 const INNER_DIAMETER: f32 = 230.0;
+/// Height of the hue slider placed below the S/V square.
+const HUE_SLIDER_HEIGHT: f32 = 16.0;
+/// Width of one top-level tab in the header bar.
+const TOP_TAB_WIDTH: f32 = 78.0;
+/// Height of one top-level tab in the header bar.
+const TOP_TAB_HEIGHT: f32 = 20.0;
 /// The height of the tab bar.
 const TAB_BAR_HEIGHT: f32 = 30.0;
 /// The spacing between the slider rows (Qt: controls_v_layout spacing 8).
@@ -81,6 +96,7 @@ const ADD_BUTTON_SIZE: f32 = 28.0;
 /// The height of the Original/New preview panels.
 const PREVIEW_HEIGHT: f32 = 44.0;
 /// The fixed width of the right pane.
+#[allow(dead_code)]
 const RIGHT_PANE_WIDTH: f32 = 230.0;
 /// The maximum number of recent colors.
 const MAX_RECENT: usize = 12;
@@ -109,6 +125,16 @@ pub enum ActiveTab {
     Rgb,
     /// The HSV channel tab.
     Hsv,
+}
+
+/// The top-level tab of the dialog: raw color picking or the swatch library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickerTab {
+    /// Raw color controls (square + hue slider + RGB/HSV + hex).
+    #[default]
+    Color,
+    /// Swatch sets + recent colors library.
+    Library,
 }
 
 /// A named swatch set of the swatch tab bar.
@@ -169,9 +195,56 @@ fn ok_icon() -> (&'static str, Font) {
 }
 
 /// The glyph for the close ("x") button of the
-/// [`ColorPickerWindow`] header.
+/// [`ColorPickerWindow`] header (legacy text fallback; the header now draws
+/// [`CANCEL_SVG`]).
+#[allow(dead_code)]
 fn close_symbol() -> &'static str {
     "\u{00D7}"
+}
+
+/// Lucide `pipette` icon for the eyedropper button.
+const EYEDROPPER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>"#;
+
+/// Lucide `x` icon for the header close button.
+const CANCEL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
+
+/// Lucide `rotate-ccw` icon for the reset button.
+const RESET_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>"#;
+
+/// Size of the eyedropper button beside the hue slider.
+const DROPPER_SIZE: f32 = 28.0;
+/// Gap between the hue slider and the eyedropper button.
+const HUE_DROPPER_GAP: f32 = 8.0;
+/// Size of a centered SVG glyph inside an icon button.
+const ICON_GLYPH_SIZE: f32 = 16.0;
+
+/// Draws an SVG glyph centered inside `bounds`, tinted with `color`.
+fn draw_svg_icon(renderer: &mut Renderer, svg: &'static [u8], bounds: Rectangle, clip: Rectangle, color: Color) {
+    use iced::advanced::svg::Renderer as _;
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return;
+    }
+    let handle = iced::widget::svg::Handle::from_memory(svg);
+    let size = ICON_GLYPH_SIZE
+        .min(bounds.width - 4.0)
+        .min(bounds.height - 4.0)
+        .max(8.0);
+    let icon = Rectangle {
+        x: bounds.center_x() - size / 2.0,
+        y: bounds.center_y() - size / 2.0,
+        width: size,
+        height: size,
+    };
+    renderer.draw_svg(
+        iced::advanced::svg::Svg {
+            handle,
+            color: Some(color),
+            rotation: iced::Radians(0.0),
+            opacity: 1.0,
+        },
+        icon,
+        clip,
+    );
 }
 
 /// Centers a dialog of the given `size` over `position` and bounces it back
@@ -215,8 +288,29 @@ fn close_button_rect(header: Rectangle) -> Rectangle {
     }
 }
 
+/// The rectangles of the top-level `[Color | Library]` tabs inside the
+/// window `header`. Tabs are left-aligned; the middle strip stays draggable.
+fn top_tab_rects(header: Rectangle) -> (Rectangle, Rectangle) {
+    let y = header.y + (header.height - TOP_TAB_HEIGHT) / 2.0;
+    let color = Rectangle {
+        x: header.x + 6.0,
+        y,
+        width: TOP_TAB_WIDTH,
+        height: TOP_TAB_HEIGHT,
+    };
+    let library = Rectangle {
+        x: color.x + color.width + 6.0,
+        y,
+        width: TOP_TAB_WIDTH,
+        height: TOP_TAB_HEIGHT,
+    };
+    (color, library)
+}
+
 /// Returns true if a point (relative to the picker bounds origin) lies inside
 /// the hue ring band (between the ring's inner and outer radius).
+/// Legacy helper kept for the old two-pane layout fns below.
+#[allow(dead_code)]
 fn is_in_ring_band(position: Point, size: Size) -> bool {
     let dx = position.x - size.width / 2.0;
     let dy = position.y - size.height / 2.0;
@@ -242,20 +336,38 @@ fn visible_cols(width: f32) -> usize {
 /// The number of columns occupied by `count` cells flowing down
 /// [`STRIP_ROWS`] rows; at least one viewport worth of columns.
 fn strip_content_cols(count: usize, viewport_width: f32) -> usize {
+    strip_content_cols_rows(count, viewport_width, STRIP_ROWS)
+}
+
+/// The number of columns occupied by `count` cells flowing down `rows`
+/// rows; at least one viewport worth of columns.
+fn strip_content_cols_rows(count: usize, viewport_width: f32, rows: usize) -> usize {
     count
-        .max(STRIP_ROWS * visible_cols(viewport_width))
-        .div_ceil(STRIP_ROWS)
+        .max(rows * visible_cols(viewport_width))
+        .div_ceil(rows.max(1))
 }
 
 /// The total width occupied by the columns of a strip with `count` cells.
 fn strip_content_width(count: usize, viewport_width: f32) -> f32 {
-    strip_content_cols(count, viewport_width) as f32 * CELL_PITCH - GRID_SPACING
+    strip_content_width_rows(count, viewport_width, STRIP_ROWS)
+}
+
+/// The total width occupied by the columns of a strip with `count` cells
+/// flowing down `rows` rows.
+fn strip_content_width_rows(count: usize, viewport_width: f32, rows: usize) -> f32 {
+    strip_content_cols_rows(count, viewport_width, rows) as f32 * CELL_PITCH - GRID_SPACING
 }
 
 /// The maximal scroll offset of a strip with `count` cells inside a
 /// viewport of the given width.
 fn strip_max_scroll(count: usize, viewport_width: f32) -> f32 {
-    (strip_content_width(count, viewport_width) + 2.0 * SWATCH_PAGE_MARGIN
+    strip_max_scroll_rows(count, viewport_width, STRIP_ROWS)
+}
+
+/// The maximal scroll offset of a strip with `count` cells flowing down
+/// `rows` rows inside a viewport of the given width.
+fn strip_max_scroll_rows(count: usize, viewport_width: f32, rows: usize) -> f32 {
+    (strip_content_width_rows(count, viewport_width, rows) + 2.0 * SWATCH_PAGE_MARGIN
         - viewport_width)
         .max(0.0)
 }
@@ -263,7 +375,14 @@ fn strip_max_scroll(count: usize, viewport_width: f32) -> f32 {
 /// Clamps a scroll offset against the content extent of a strip with
 /// `count` cells inside a viewport of the given width.
 fn clamp_strip_scroll(offset: f32, count: usize, viewport_width: f32) -> f32 {
-    offset.clamp(0.0, strip_max_scroll(count, viewport_width))
+    clamp_strip_scroll_rows(offset, count, viewport_width, STRIP_ROWS)
+}
+
+/// Clamps a scroll offset against the content extent of a strip with
+/// `count` cells flowing down `rows` rows inside a viewport of the given
+/// width.
+fn clamp_strip_scroll_rows(offset: f32, count: usize, viewport_width: f32, rows: usize) -> f32 {
+    offset.clamp(0.0, strip_max_scroll_rows(count, viewport_width, rows))
 }
 
 /// True if two colors have identical RGBA bytes.
@@ -455,9 +574,9 @@ where
         let state_ptr: *mut State = state;
         let hex_fake = on_cancel.clone();
         let hex_input = TextInput::new("", unsafe { &(*state_ptr).hex_input })
-            .padding([4, 8])
+            .padding([2, 6])
             .size(13)
-            .style(style::text_input)
+            .style(style::hex_text_input)
             .on_input(move |text: String| {
                 unsafe { (*state_ptr).hex_input = text; }
                 hex_fake.clone()
@@ -568,8 +687,6 @@ where
             .expect("widget: Layout should have a hue layout")
             .bounds();
 
-        let is_in_ring = |position: Point| is_in_ring_band(position, hue_bounds.size());
-
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => match delta {
                 mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
@@ -597,9 +714,7 @@ where
                     self.state.color_bar_dragged = ColorBarDragged::SatValue;
                     self.state.focus = Focus::Square;
                 }
-                if cursor.is_over(hue_bounds)
-                    && cursor.position_in(hue_bounds).is_some_and(is_in_ring)
-                {
+                if cursor.is_over(hue_bounds) {
                     self.state.color_bar_dragged = ColorBarDragged::Hue;
                     self.state.focus = Focus::Ring;
                 }
@@ -624,9 +739,8 @@ where
         };
 
         let calc_hue = |cursor_position: Point| {
-            let dx = cursor_position.x - hue_bounds.x - hue_bounds.width / 2.0;
-            let dy = cursor_position.y - hue_bounds.y - hue_bounds.height / 2.0;
-            hue_from_angle(dy.atan2(dx).to_degrees())
+            let t = ((cursor_position.x - hue_bounds.x) / hue_bounds.width.max(1.0)).clamp(0.0, 1.0);
+            (t * 360.0).round() as u16 % 360
         };
 
         match self.state.color_bar_dragged {
@@ -956,12 +1070,14 @@ where
                 if self.state.keyboard_modifiers.shift() {
                     self.state.focus = previous_focus(
                         self.state.focus,
+                        self.state.picker_tab,
                         self.state.active_tab,
                         self.state.naming_new_set,
                     );
                 } else {
                     self.state.focus = next_focus(
                         self.state.focus,
+                        self.state.picker_tab,
                         self.state.active_tab,
                         self.state.naming_new_set,
                     );
@@ -1117,6 +1233,36 @@ where
                 };
 
                 match self.state.focus {
+                    Focus::TopColor => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                            ) => {
+                                self.set_picker_tab(PickerTab::Color, shell);
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                                self.state.focus = Focus::TopLibrary;
+                                event::Status::Captured
+                            }
+                            _ => event::Status::Ignored,
+                        };
+                    }
+                    Focus::TopLibrary => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                            ) => {
+                                self.set_picker_tab(PickerTab::Library, shell);
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                                self.state.focus = Focus::TopColor;
+                                event::Status::Captured
+                            }
+                            _ => event::Status::Ignored,
+                        };
+                    }
                     Focus::Square => {
                         let mut hsv = self.state.hsv();
                         hsv.hue = self.state.hue;
@@ -1170,7 +1316,7 @@ where
                                 self.set_active_tab(ActiveTab::Rgb, shell);
                                 event::Status::Captured
                             }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
                                 self.state.focus = Focus::TabHsv;
                                 event::Status::Captured
                             }
@@ -1185,7 +1331,7 @@ where
                                 self.set_active_tab(ActiveTab::Hsv, shell);
                                 event::Status::Captured
                             }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
                                 self.state.focus = Focus::TabRgb;
                                 event::Status::Captured
                             }
@@ -1276,7 +1422,7 @@ where
                                     let start = (idx / STRIP_ROWS) as f32 * CELL_PITCH
                                         - self.state.swatch_scroll_x;
                                     let end = start + SWATCH_SIZE;
-                                    let view = RIGHT_PANE_WIDTH - 2.0 * SWATCH_PAGE_MARGIN;
+                                    let view = CONTENT_WIDTH - 2.0 * SWATCH_PAGE_MARGIN;
                                     if start < 0.0 {
                                         self.state.swatch_scroll_x += start;
                                     } else if end > view {
@@ -1285,7 +1431,7 @@ where
                                     self.state.swatch_scroll_x = clamp_strip_scroll(
                                         self.state.swatch_scroll_x,
                                         set_len,
-                                        RIGHT_PANE_WIDTH,
+                                        CONTENT_WIDTH,
                                     );
                                     event::Status::Captured
                                 } else {
@@ -1327,11 +1473,11 @@ where
     'b: 'a,
 {
     /// The channel indices of the rows of the active tab: `[R,G,B,A]` or
-    /// `[H,S,V]`.
+    /// `[H,S,V,A]`.
     fn active_tab_channels(&self) -> Vec<usize> {
         match self.state.active_tab {
             ActiveTab::Rgb => vec![0, 1, 2, 3],
-            ActiveTab::Hsv => vec![4, 5, 6],
+            ActiveTab::Hsv => vec![4, 5, 6, 3],
         }
     }
 
@@ -1473,6 +1619,15 @@ where
         if self.state.active_tab != tab {
             self.state.active_tab = tab;
             self.state.sync_display();
+            self.state.clear_cache();
+            shell.invalidate_layout();
+        }
+    }
+
+    /// Switches the top-level tab (raw color vs. library).
+    fn set_picker_tab(&mut self, tab: PickerTab, shell: &mut Shell<Message>) {
+        if self.state.picker_tab != tab {
+            self.state.picker_tab = tab;
             self.state.clear_cache();
             shell.invalidate_layout();
         }
@@ -1714,49 +1869,467 @@ where
     /// Positioning is left to the caller: the inline widget lets it flow in
     /// the layout tree, while the [`ColorPickerWindow`] shell resolves its
     /// position strategy and applies the user drag offset.
-    pub(crate) fn layout_content(&mut self, renderer: &Renderer, bounds: Size) -> Node {
-        let limits = Limits::new(Size::ZERO, bounds)
-            .shrink(Size::new(OUTER_MARGIN, OUTER_MARGIN))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .max_width(DIALOG_MAX_SIZE.width)
-            .max_height(DIALOG_MAX_SIZE.height);
+    pub(crate) fn layout_content(&mut self, renderer: &Renderer, _bounds: Size) -> Node {
+        let width = CONTENT_WIDTH;
+        let spacing = CONTROLS_SPACING;
+        let is_color = self.state.picker_tab == PickerTab::Color;
+        let is_library = !is_color;
+        // Inline widgets draw the top tabs in content; the floating window
+        // hosts them in its draggable header instead.
+        let show_top_tabs = !self.lens_in_content_draw;
 
-        // Fixed two-pane row: left pane (ring + controls) and right pane
-        // (previews, swatches, recent, buttons).
-        let divider = Row::<(), Theme, Renderer>::new()
-            .spacing(PANE_SPACING)
-            .push(Row::new().width(Length::Fixed(RING_DIM)).height(Length::Fill))
-            .push(
-                Row::new()
-                    .width(Length::Fixed(RIGHT_PANE_WIDTH))
-                    .height(Length::Fill),
-            )
-            .layout(self.tree, renderer, &limits);
+        let mut children: Vec<Node> = Vec::new();
+        let mut offset_y = 0.0;
+        let push = |node: Node, children: &mut Vec<Node>, offset_y: &mut f32| {
+            let h = node.size().height;
+            children.push(node.move_to(Point::new(0.0, *offset_y)));
+            if h > 0.0 {
+                *offset_y += h + spacing;
+            }
+        };
 
-        let mut divider_children = divider.children().iter();
+        // [0] Top tabs (inline only).
+        {
+            let h = if show_top_tabs { TAB_BAR_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fixed(width))
+                    .height(Length::Fixed(h))
+                    .layout(
+                        self.tree,
+                        renderer,
+                        &Limits::new(Size::ZERO, Size::new(width, h)),
+                    )
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
 
-        let block1_bounds = divider_children
-            .next()
-            .expect("Divider should have a first child")
-            .bounds();
-        let block2_bounds = divider_children
-            .next()
-            .expect("Divider should have a second child")
-            .bounds();
+        // [1] Original/New previews on top (always).
+        {
+            let node = Node::with_children(Size::new(width, PREVIEW_AREA_HEIGHT), Vec::new());
+            push(node, &mut children, &mut offset_y);
+        }
 
-        // ----------- Block 1 (left pane) ----------------------
-        let block1_node = left_pane_layout(self, renderer, block1_bounds);
+        // [2] Picker: S/V square (centered) + hue slider with eyedropper
+        // button on its right, centered as a group.
+        {
+            if is_color {
+                let square_limits = Limits::new(Size::ZERO, Size::new(SQUARE_DIM, SQUARE_DIM));
+                let square_node = Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fixed(SQUARE_DIM))
+                    .height(Length::Fixed(SQUARE_DIM))
+                    .layout(self.tree, renderer, &square_limits)
+                    .move_to(Point::new((width - SQUARE_DIM) / 2.0, 0.0));
+                let group_width = SQUARE_DIM + HUE_DROPPER_GAP + DROPPER_SIZE;
+                let group_x = (width - group_width) / 2.0;
+                let row_y = SQUARE_DIM + 8.0;
+                let row_height = HUE_SLIDER_HEIGHT.max(DROPPER_SIZE);
+                let hue_node = Node::with_children(
+                    Size::new(SQUARE_DIM, HUE_SLIDER_HEIGHT),
+                    Vec::new(),
+                )
+                .move_to(Point::new(group_x, row_y + (row_height - HUE_SLIDER_HEIGHT) / 2.0));
+                let dropper_node = self
+                    .dropper_button
+                    .layout(
+                        &mut self.tree.children[0],
+                        renderer,
+                        &Limits::new(Size::ZERO, Size::new(DROPPER_SIZE, DROPPER_SIZE)),
+                    )
+                    .move_to(Point::new(
+                        group_x + SQUARE_DIM + HUE_DROPPER_GAP,
+                        row_y + (row_height - DROPPER_SIZE) / 2.0,
+                    ));
+                let picker_node = Node::with_children(
+                    Size::new(width, SQUARE_DIM + 8.0 + row_height),
+                    vec![square_node, hue_node, dropper_node],
+                );
+                push(picker_node, &mut children, &mut offset_y);
+            } else {
+                push(
+                    Node::with_children(Size::new(width, 0.0), Vec::new()),
+                    &mut children,
+                    &mut offset_y,
+                );
+            }
+        }
 
-        // ----------- Block 2 (right pane) ----------------------
-        let block2_node = right_pane_layout(self, renderer, block2_bounds);
+        // [2] RGB/HSV sub tab bar (Color only).
+        {
+            let h = if is_color { TAB_BAR_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(h))
+                    .layout(self.tree, renderer, &Limits::new(Size::ZERO, Size::new(width, h)))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
 
-        let (width, height) = (
-            block1_node.size().width + block2_node.size().width + PANE_SPACING,
-            block2_node.size().height.max(block1_node.size().height),
-        );
+        // [3] Slider controls (Color only).
+        {
+            if is_color {
+                let controls_height = 4.0 * SLIDER_HEIGHT + 3.0 * ROW_SPACING;
+                let groove_width = width - LABEL_WIDTH - VALUE_WIDTH;
+                let mut controls_children = Vec::new();
+                for row in 0..4 {
+                    let y = row as f32 * (SLIDER_HEIGHT + ROW_SPACING);
+                    let label_node =
+                        Node::with_children(Size::new(LABEL_WIDTH, SLIDER_HEIGHT), Vec::new())
+                            .move_to(Point::new(0.0, y));
+                    let groove_node =
+                        Node::with_children(Size::new(groove_width, SLIDER_HEIGHT), Vec::new())
+                            .move_to(Point::new(LABEL_WIDTH, y));
+                    let value_input_index = match (self.state.active_tab, row) {
+                        (ActiveTab::Rgb, i) => Some(i),
+                        (ActiveTab::Hsv, 3) => Some(3),
+                        (ActiveTab::Hsv, i) => Some(4 + i),
+                    };
+                    let value_child = if let Some(value_input_index) = value_input_index {
+                        let input_tree =
+                            if let Some(child_tree) = self.tree.children.get_mut(VALUE_INPUTS_INDEX + value_input_index) {
+                                child_tree.diff(&mut self.value_inputs[value_input_index]
+                                    as &mut dyn Widget<Message, Theme, Renderer>);
+                                child_tree
+                            } else {
+                                let child_tree = Tree::new(&self.value_inputs[value_input_index]
+                                    as &dyn Widget<Message, Theme, Renderer>);
+                                self.tree.children.push(child_tree);
+                                self.tree.children.last_mut().unwrap()
+                            };
+                        self.value_inputs[value_input_index]
+                            .layout(
+                                input_tree,
+                                renderer,
+                                &Limits::new(Size::ZERO, Size::new(VALUE_WIDTH, SLIDER_HEIGHT)),
+                                Some(&text_input::Value::new(
+                                    &self.state.value_inputs[value_input_index],
+                                )),
+                            )
+                            .move_to(Point::new(LABEL_WIDTH + groove_width, y))
+                    } else {
+                        Node::with_children(Size::new(VALUE_WIDTH, SLIDER_HEIGHT), Vec::new())
+                            .move_to(Point::new(LABEL_WIDTH + groove_width, y))
+                    };
+                    controls_children.push(Node::with_children(
+                        Size::new(width, SLIDER_HEIGHT),
+                        vec![label_node, groove_node, value_child],
+                    ));
+                }
+                push(
+                    Node::with_children(Size::new(width, controls_height), controls_children),
+                    &mut children,
+                    &mut offset_y,
+                );
+            } else {
+                push(
+                    Node::with_children(Size::new(width, 0.0), Vec::new()),
+                    &mut children,
+                    &mut offset_y,
+                );
+            }
+        }
 
-        Node::with_children(Size::new(width, height), vec![block1_node, block2_node])
+        // [4] Hex container (Color only).
+        {
+            if is_color {
+                let hex_input_tree =
+                    if let Some(child_tree) = self.tree.children.get_mut(HEX_INPUT_INDEX) {
+                        child_tree.diff(
+                            &mut self.hex_input as &mut dyn Widget<Message, Theme, Renderer>
+                        );
+                        child_tree
+                    } else {
+                        let child_tree =
+                            Tree::new(&self.hex_input as &dyn Widget<Message, Theme, Renderer>);
+                        self.tree.children.push(child_tree);
+                        self.tree.children.last_mut().unwrap()
+                    };
+                let mut hex_input_node = self.hex_input.layout(
+                    hex_input_tree,
+                    renderer,
+                    &Limits::new(
+                        Size::ZERO,
+                        Size::new(
+                            width - HEX_LABEL_WIDTH - HEX_INPUT_RIGHT_INSET,
+                            HEX_CONTAINER_HEIGHT,
+                        ),
+                    ),
+                    Some(&text_input::Value::new(&self.state.hex_input)),
+                );
+                let hex_label_node = Node::with_children(
+                    Size::new(HEX_LABEL_WIDTH, HEX_CONTAINER_HEIGHT),
+                    Vec::new(),
+                );
+                // The TextInput sizes to its content (shorter than the 44px
+                // panel); center it vertically instead of top-aligning so the
+                // text lines up with the centered "Hex:" label.
+                let input_y =
+                    ((HEX_CONTAINER_HEIGHT - hex_input_node.size().height) / 2.0).max(0.0);
+                hex_input_node =
+                    hex_input_node.move_to(Point::new(HEX_LABEL_WIDTH, input_y));
+                push(
+                    Node::with_children(
+                        Size::new(width, HEX_CONTAINER_HEIGHT),
+                        vec![hex_label_node, hex_input_node],
+                    ),
+                    &mut children,
+                    &mut offset_y,
+                );
+            } else {
+                push(
+                    Node::with_children(Size::new(width, 0.0), Vec::new()),
+                    &mut children,
+                    &mut offset_y,
+                );
+            }
+        }
+
+        // [5] Swatches heading (Library only).
+        {
+            let h = if is_library { LABEL_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(h))
+                    .layout(self.tree, renderer, &Limits::new(Size::ZERO, Size::new(width, h)))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
+
+        // [6] Swatch tab bar (Library only).
+        {
+            let h = if is_library { TAB_BAR_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(h))
+                    .layout(self.tree, renderer, &Limits::new(Size::ZERO, Size::new(width, h)))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
+
+        // [7] Swatch page (Library only).
+        {
+            if is_library {
+                let page_height = STRIP_HEIGHT;
+                let mut page_children: Vec<Node> = Vec::new();
+                if self.state.naming_new_set {
+                    let (input_rect, _, _) = name_prompt_rects(Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width,
+                        height: page_height,
+                    });
+                    let name_tree = if let Some(child_tree) =
+                        self.tree.children.get_mut(NEW_SET_NAME_INDEX)
+                    {
+                        child_tree.diff(
+                            &mut self.new_set_name_input
+                                as &mut dyn Widget<Message, Theme, Renderer>,
+                        );
+                        child_tree
+                    } else {
+                        let child_tree = Tree::new(
+                            &self.new_set_name_input as &dyn Widget<Message, Theme, Renderer>,
+                        );
+                        self.tree.children.push(child_tree);
+                        self.tree.children.last_mut().unwrap()
+                    };
+                    let input_node = self
+                        .new_set_name_input
+                        .layout(
+                            name_tree,
+                            renderer,
+                            &Limits::new(Size::ZERO, input_rect.size()),
+                            Some(&text_input::Value::new(&self.state.pending_swatch_name)),
+                        )
+                        .move_to(Point::new(input_rect.x, input_rect.y));
+                    page_children.push(input_node);
+                } else if let Some(set) = self.state.swatch_sets.get(self.state.active_swatch_tab) {
+                    let cells = set.colors.len().max(STRIP_ROWS * visible_cols(width));
+                    let scroll = clamp_strip_scroll(
+                        self.state.swatch_scroll_x,
+                        set.colors.len(),
+                        width,
+                    );
+                    for i in 0..cells {
+                        let col = i / STRIP_ROWS;
+                        let row = i % STRIP_ROWS;
+                        page_children.push(
+                            Node::with_children(Size::new(SWATCH_SIZE, SWATCH_SIZE), Vec::new())
+                                .move_to(Point::new(
+                                    SWATCH_PAGE_MARGIN + col as f32 * CELL_PITCH - scroll,
+                                    SWATCH_PAGE_MARGIN + row as f32 * CELL_PITCH,
+                                )),
+                        );
+                    }
+                }
+                push(
+                    Node::with_children(Size::new(width, page_height), page_children),
+                    &mut children,
+                    &mut offset_y,
+                );
+            } else {
+                push(
+                    Node::with_children(Size::new(width, 0.0), Vec::new()),
+                    &mut children,
+                    &mut offset_y,
+                );
+            }
+        }
+
+        // [8] Add-swatch button (Library only).
+        {
+            let h = if is_library { ADD_BUTTON_SIZE } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fixed(ADD_BUTTON_SIZE))
+                    .height(Length::Fixed(h))
+                    .layout(
+                        self.tree,
+                        renderer,
+                        &Limits::new(Size::ZERO, Size::new(ADD_BUTTON_SIZE, h)),
+                    )
+                    .move_to(Point::new((width - ADD_BUTTON_SIZE) / 2.0, 0.0))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            // Center manually: wrap in fixed-width parent.
+            let wrapped = if h > 0.0 {
+                Node::with_children(Size::new(width, h), vec![node])
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(wrapped, &mut children, &mut offset_y);
+        }
+
+        // [9] Divider (Library only).
+        {
+            let h = if is_library { DIVIDER_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(h))
+                    .layout(self.tree, renderer, &Limits::new(Size::ZERO, Size::new(width, h)))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
+
+        // [10] Recent heading (Library only).
+        {
+            let h = if is_library { LABEL_HEIGHT } else { 0.0 };
+            let node = if h > 0.0 {
+                Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(h))
+                    .layout(self.tree, renderer, &Limits::new(Size::ZERO, Size::new(width, h)))
+            } else {
+                Node::with_children(Size::new(width, 0.0), Vec::new())
+            };
+            push(node, &mut children, &mut offset_y);
+        }
+
+        // [11] Recent grid: full strip in Library, mirrored single row in
+        // Color below the hex input.
+        {
+            if is_library {
+                let recent_count = self.state.recent_colors.len();
+                let recent_cells = recent_count.max(STRIP_ROWS * visible_cols(width));
+                let recent_scroll =
+                    clamp_strip_scroll(self.state.recent_scroll_x, recent_count, width);
+                let mut recent_children: Vec<Node> = Vec::new();
+                for i in 0..recent_cells {
+                    let col = i / STRIP_ROWS;
+                    let row = i % STRIP_ROWS;
+                    recent_children.push(
+                        Node::with_children(Size::new(SWATCH_SIZE, SWATCH_SIZE), Vec::new())
+                            .move_to(Point::new(
+                                SWATCH_PAGE_MARGIN + col as f32 * CELL_PITCH - recent_scroll,
+                                SWATCH_PAGE_MARGIN + row as f32 * CELL_PITCH,
+                            )),
+                    );
+                }
+                push(
+                    Node::with_children(Size::new(width, STRIP_HEIGHT), recent_children),
+                    &mut children,
+                    &mut offset_y,
+                );
+            } else {
+                let recent_count = self.state.recent_colors.len();
+                let recent_cells = recent_count.max(visible_cols(width));
+                let recent_scroll = clamp_strip_scroll_rows(
+                    self.state.recent_scroll_x,
+                    recent_count,
+                    width,
+                    RECENT_SINGLE_ROWS,
+                );
+                let mut recent_children: Vec<Node> = Vec::new();
+                for i in 0..recent_cells {
+                    recent_children.push(
+                        Node::with_children(Size::new(SWATCH_SIZE, SWATCH_SIZE), Vec::new())
+                            .move_to(Point::new(
+                                SWATCH_PAGE_MARGIN + i as f32 * CELL_PITCH - recent_scroll,
+                                RECENT_SINGLE_VERT_MARGIN,
+                            )),
+                    );
+                }
+                push(
+                    Node::with_children(
+                        Size::new(width, RECENT_SINGLE_ROW_HEIGHT),
+                        recent_children,
+                    ),
+                    &mut children,
+                    &mut offset_y,
+                );
+            }
+        }
+
+        // [13] Buttons row below hex: reset icon + OK (always).
+        // The eyedropper lives beside the hue slider (see picker above).
+        {
+            let reset_node = Row::<(), Theme, Renderer>::new()
+                .width(Length::Fixed(RESET_WIDTH))
+                .height(Length::Fixed(BUTTONS_HEIGHT))
+                .layout(
+                    self.tree,
+                    renderer,
+                    &Limits::new(Size::ZERO, Size::new(RESET_WIDTH, BUTTONS_HEIGHT)),
+                )
+                .move_to(Point::new(0.0, 0.0));
+            let button_width = width - RESET_WIDTH - 5.0;
+            let submit_button = self
+                .submit_button
+                .layout(
+                    &mut self.tree.children[1],
+                    renderer,
+                    &Limits::new(Size::ZERO, Size::new(button_width, BUTTONS_HEIGHT)),
+                )
+                .move_to(Point::new(RESET_WIDTH + 5.0, 0.0));
+            push(
+                Node::with_children(
+                    Size::new(width, BUTTONS_HEIGHT),
+                    vec![reset_node, submit_button],
+                ),
+                &mut children,
+                &mut offset_y,
+            );
+        }
+
+        if offset_y > 0.0 {
+            offset_y -= spacing;
+        }
+        Node::with_children(Size::new(width, offset_y), children)
     }
 
     /// The event handling of the dialog content.
@@ -1793,75 +2366,39 @@ where
         }
 
         let mut children = layout.children();
-        // ----------- Block 1 (left pane) ----------------------
-        let block1_layout = children
+        // Single column: [0]top [1]preview [2]picker [3]subtabs [4]controls
+        // [5]hex [6]swlabel [7]swtabs [8]swpage [9]add [10]div [11]reclabel
+        // [12]recgrid [13]buttons
+        let top_tabs_layout = children.next().expect("widget: Layout should have top tabs");
+        let _preview_layout = children.next();
+        let picker_layout = children.next().expect("widget: Layout should have picker");
+        let tab_bar_layout = children.next().expect("widget: Layout should have tab bar");
+        let controls_layout = children.next().expect("widget: Layout should have controls");
+        let hex_layout = children.next().expect("widget: Layout should have hex");
+        let _swatch_label_layout = children.next();
+        let swatch_tab_bar_layout = children
             .next()
-            .expect("widget: Layout should have a 1. block layout");
-        let mut block1_children = block1_layout.children();
-
-        let picker_layout = block1_children
-            .next()
-            .expect("widget: Layout should have a picker layout");
-        let mut picker_children = picker_layout.children();
-        let _sat_value_layout = picker_children
-            .next()
-            .expect("widget: Layout should have a sat/value layout");
-        let _ring_bounds = picker_children
-            .next()
-            .expect("widget: Layout should have a hue layout")
-            .bounds();
-
-        let tab_bar_layout = block1_children
-            .next()
-            .expect("widget: Layout should have a tab bar layout");
-
-        let controls_layout = block1_children
-            .next()
-            .expect("widget: Layout should have a controls layout");
-
-        let hex_layout = block1_children
-            .next()
-            .expect("widget: Layout should have a hex container layout");
-        // ----------- Block 1 end ------------------
-
-        // ----------- Block 2 (right pane) ----------------------
-        let block2_layout = children
-            .next()
-            .expect("widget: Layout should have a 2. block layout");
-        let mut block2_children = block2_layout.children();
-
+            .expect("widget: Layout should have swatch tabs");
+        let swatch_page_layout = children.next().expect("widget: Layout should have swatch page");
+        let add_btn_wrapper = children.next().expect("widget: Layout should have add button");
+        let _divider_layout = children.next();
+        let _recent_label_layout = children.next();
+        let recent_grid_layout = children.next().expect("widget: Layout should have recent grid");
+        let buttons_node = children.next().expect("widget: Layout should have buttons");
+        let mut buttons_layout = buttons_node.children();
         let mut fake_messages: Vec<Message> = Vec::new();
 
-        let _preview_layout = block2_children.next();
-        let _swatch_label_layout = block2_children.next();
-        let swatch_tab_bar_layout = block2_children
+        let reset_button_layout = buttons_layout
             .next()
-            .expect("widget: Layout should have a swatch tab bar layout");
-        let swatch_page_layout = block2_children
-            .next()
-            .expect("widget: Layout should have a swatch tab page layout");
-        let add_btn_layout = block2_children
-            .next()
-            .expect("widget: Layout should have an add-swatch button layout");
-        let _divider_layout = block2_children.next();
-        let _recent_label_layout = block2_children.next();
-        let recent_grid_layout = block2_children
-            .next()
-            .expect("widget: Layout should have a recent grid layout");
-        let mut buttons_layout = block2_children
-            .next()
-            .expect("widget: Layout should have a buttons layout")
-            .children();
-        let _reset_button_layout = buttons_layout
-            .next()
-            .expect("widget: Layout should have a reset button layout");
-        let dropper_button_layout = buttons_layout
-            .next()
-            .expect("widget: Layout should have an eyedropper button layout for a ColorPicker");
+            .expect("widget: Layout should have reset button");
+        // Eyedropper lives beside the hue slider: third child of the picker
+        // (Color tab only; absent in the Library tab).
+        let dropper_button_layout_opt = picker_layout.children().nth(2);
         let submit_button_layout = buttons_layout
             .next()
-            .expect("widget: Layout should have a submit button layout for a ColorPicker");
-        // ----------- Block 2 end ------------------
+            .expect("widget: Layout should have submit button");
+        let is_color = self.state.picker_tab == PickerTab::Color;
+        let is_library = !is_color;
 
         if event::Status::Captured == self.on_event_keyboard(event, shell) {
             self.clear_cache();
@@ -1870,12 +2407,78 @@ where
             return;
         }
 
+        // Top-level tabs in content (inline mode; floating uses the header).
+        if !self.lens_in_content_draw {
+            match event {
+                Event::Mouse(
+                    mouse::Event::CursorMoved { .. }
+                    | mouse::Event::ButtonPressed(_)
+                    | mouse::Event::ButtonReleased(_),
+                )
+                | Event::Touch(touch::Event::FingerMoved { .. }) => {
+                    let bounds = top_tabs_layout.bounds();
+                    if bounds.height > 0.0 {
+                        let gap = 6.0;
+                        let w = (bounds.width - gap) / 2.0;
+                        self.state.top_color_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                        self.state.top_library_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x + w + gap,
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                    }
+                }
+                _ => {}
+            }
+            if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) = event
+            {
+                let bounds = top_tabs_layout.bounds();
+                if bounds.height > 0.0 {
+                    let gap = 6.0;
+                    let w = (bounds.width - gap) / 2.0;
+                    let color_tab = Rectangle {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    let lib_tab = Rectangle {
+                        x: bounds.x + w + gap,
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    if cursor.is_over(color_tab) && self.state.picker_tab != PickerTab::Color {
+                        self.set_picker_tab(PickerTab::Color, shell);
+                        shell.capture_event();
+                        shell.request_redraw();
+                        return;
+                    } else if cursor.is_over(lib_tab)
+                        && self.state.picker_tab != PickerTab::Library
+                    {
+                        self.set_picker_tab(PickerTab::Library, shell);
+                        shell.capture_event();
+                        shell.request_redraw();
+                        return;
+                    }
+                }
+            }
+        }
+
         // Forward events to the hex input and the channel inputs of the
         // active tab. Every TextInput mutates its slot in `state` from its
         // `on_input` closure and pushes a fake message; a non-empty message
         // list means that this input's value changed (submit_button pattern).
         let mut hex_changed = false;
-        if let Some(tree_child) = self.tree.children.get_mut(HEX_INPUT_INDEX)
+        if is_color
+            && let Some(tree_child) = self.tree.children.get_mut(HEX_INPUT_INDEX)
             && let Some(input_layout) = hex_input_layout(hex_layout)
         {
             let mut local_messages = Vec::new();
@@ -1901,7 +2504,11 @@ where
         }
 
         let mut value_changed_indices = Vec::new();
-        for i in self.active_tab_channels() {
+        for i in if is_color {
+            self.active_tab_channels()
+        } else {
+            Vec::new()
+        } {
             if self.tree.children.len() <= VALUE_INPUTS_INDEX + i {
                 continue;
             }
@@ -1991,112 +2598,141 @@ where
         }
 
         // Clicking a tab bar shows that tab.
-        match event {
-            Event::Mouse(
-                mouse::Event::CursorMoved { .. }
-                | mouse::Event::ButtonPressed(_)
-                | mouse::Event::ButtonReleased(_),
-            )
-            | Event::Touch(touch::Event::FingerMoved { .. }) => {
+        if is_color {
+            match event {
+                Event::Mouse(
+                    mouse::Event::CursorMoved { .. }
+                    | mouse::Event::ButtonPressed(_)
+                    | mouse::Event::ButtonReleased(_),
+                )
+                | Event::Touch(touch::Event::FingerMoved { .. }) => {
+                    let bounds = tab_bar_layout.bounds();
+                    let gap = 2.0;
+                    let half = (bounds.width - gap) / 2.0;
+                    let hsv_tab_bounds = Rectangle {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: half,
+                        height: bounds.height,
+                    };
+                    let rgb_tab_bounds = Rectangle {
+                        x: bounds.x + half + gap,
+                        y: bounds.y,
+                        width: half,
+                        height: bounds.height,
+                    };
+                    self.state.tab_rgb_hovered = cursor.is_over(rgb_tab_bounds);
+                    self.state.tab_hsv_hovered = cursor.is_over(hsv_tab_bounds);
+                }
+                _ => {}
+            }
+            if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) = event
+            {
                 let bounds = tab_bar_layout.bounds();
                 let gap = 2.0;
                 let half = (bounds.width - gap) / 2.0;
-                let rgb_tab_bounds = Rectangle {
+                let hsv_tab_bounds = Rectangle {
                     x: bounds.x,
                     y: bounds.y,
                     width: half,
                     height: bounds.height,
                 };
-                let hsv_tab_bounds = Rectangle {
+                let rgb_tab_bounds = Rectangle {
                     x: bounds.x + half + gap,
                     y: bounds.y,
                     width: half,
                     height: bounds.height,
                 };
-                self.state.tab_rgb_hovered = cursor.is_over(rgb_tab_bounds);
-                self.state.tab_hsv_hovered = cursor.is_over(hsv_tab_bounds);
-            }
-            _ => {}
-        }
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) = event
-        {
-            let bounds = tab_bar_layout.bounds();
-            let gap = 2.0;
-            let half = (bounds.width - gap) / 2.0;
-            let rgb_tab_bounds = Rectangle {
-                x: bounds.x,
-                y: bounds.y,
-                width: half,
-                height: bounds.height,
-            };
-            let hsv_tab_bounds = Rectangle {
-                x: bounds.x + half + gap,
-                y: bounds.y,
-                width: half,
-                height: bounds.height,
-            };
-            if cursor.is_over(rgb_tab_bounds) && self.state.active_tab != ActiveTab::Rgb {
-                self.set_active_tab(ActiveTab::Rgb, shell);
-                captured = true;
-            } else if cursor.is_over(hsv_tab_bounds) && self.state.active_tab != ActiveTab::Hsv {
-                self.set_active_tab(ActiveTab::Hsv, shell);
-                captured = true;
+                if cursor.is_over(rgb_tab_bounds) && self.state.active_tab != ActiveTab::Rgb {
+                    self.set_active_tab(ActiveTab::Rgb, shell);
+                    captured = true;
+                } else if cursor.is_over(hsv_tab_bounds)
+                    && self.state.active_tab != ActiveTab::Hsv
+                {
+                    self.set_active_tab(ActiveTab::Hsv, shell);
+                    captured = true;
+                }
             }
         }
 
-        if event::Status::Captured == self.on_event_hsv_color(event, picker_layout, cursor, shell)
+        if is_color
+            && event::Status::Captured
+                == self.on_event_hsv_color(event, picker_layout, cursor, shell)
         {
             captured = true;
         }
 
-        if event::Status::Captured == self.on_event_sliders(event, controls_layout, cursor, shell) {
+        if is_color
+            && event::Status::Captured
+                == self.on_event_sliders(event, controls_layout, cursor, shell)
+        {
             captured = true;
         }
 
-        if self.on_event_swatches(
-            event,
-            cursor,
-            shell,
-            renderer,
-            clipboard,
-            swatch_tab_bar_layout,
-            swatch_page_layout,
-            add_btn_layout,
-        ) {
-            captured = true;
+        if is_library {
+            let add_btn_inner = add_btn_wrapper
+                .children()
+                .next()
+                .unwrap_or(add_btn_wrapper);
+            if self.on_event_swatches(
+                event,
+                cursor,
+                shell,
+                renderer,
+                clipboard,
+                swatch_tab_bar_layout,
+                swatch_page_layout,
+                add_btn_inner,
+            ) {
+                captured = true;
+            }
         }
 
         // Horizontal wheel scrolling of the swatch and recent strips. The
         // wheel is only consumed when the strip actually overflows.
+        // The swatch strip only exists in Library; the recent strip is
+        // mirrored as a single row in Color, so it scrolls in both tabs.
         if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event {
             let dy = match *delta {
                 mouse::ScrollDelta::Lines { y, .. } => y * CELL_PITCH,
                 mouse::ScrollDelta::Pixels { y, .. } => y,
             };
 
-            let page_bounds = swatch_page_layout.bounds();
-            if !self.state.naming_new_set && cursor.is_over(page_bounds) {
-                let count = self
-                    .state
-                    .swatch_sets
-                    .get(self.state.active_swatch_tab)
-                    .map_or(0, |set| set.colors.len());
-                let old = clamp_strip_scroll(self.state.swatch_scroll_x, count, page_bounds.width);
-                let new = clamp_strip_scroll(old + dy, count, page_bounds.width);
-                if (new - old).abs() > f32::EPSILON {
-                    self.state.swatch_scroll_x = new;
-                    shell.invalidate_layout();
-                    captured = true;
+            if is_library {
+                let page_bounds = swatch_page_layout.bounds();
+                if !self.state.naming_new_set && cursor.is_over(page_bounds) {
+                    let count = self
+                        .state
+                        .swatch_sets
+                        .get(self.state.active_swatch_tab)
+                        .map_or(0, |set| set.colors.len());
+                    let old =
+                        clamp_strip_scroll(self.state.swatch_scroll_x, count, page_bounds.width);
+                    let new = clamp_strip_scroll(old + dy, count, page_bounds.width);
+                    if (new - old).abs() > f32::EPSILON {
+                        self.state.swatch_scroll_x = new;
+                        shell.invalidate_layout();
+                        captured = true;
+                    }
                 }
             }
 
             let recent_bounds = recent_grid_layout.bounds();
-            if cursor.is_over(recent_bounds) {
+            if recent_bounds.height > 0.0 && cursor.is_over(recent_bounds) {
                 let count = self.state.recent_colors.len();
-                let old =
-                    clamp_strip_scroll(self.state.recent_scroll_x, count, recent_bounds.width);
-                let new = clamp_strip_scroll(old + dy, count, recent_bounds.width);
+                let rows = if is_library {
+                    STRIP_ROWS
+                } else {
+                    RECENT_SINGLE_ROWS
+                };
+                let old = clamp_strip_scroll_rows(
+                    self.state.recent_scroll_x,
+                    count,
+                    recent_bounds.width,
+                    rows,
+                );
+                let new = clamp_strip_scroll_rows(old + dy, count, recent_bounds.width, rows);
                 if (new - old).abs() > f32::EPSILON {
                     self.state.recent_scroll_x = new;
                     shell.invalidate_layout();
@@ -2105,12 +2741,13 @@ where
             }
         }
 
-        // Clicking a recent color selects it.
+        // Clicking a recent color selects it (mirrored in both tabs).
         if matches!(
             event,
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 | Event::Touch(touch::Event::FingerPressed { .. })
-        ) {
+        )
+        {
             // Scrolled-out parts of the strip are not clickable.
             let viewport = recent_grid_layout.bounds();
             for (i, cell) in recent_grid_layout.children().enumerate() {
@@ -2133,13 +2770,16 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                if cursor.is_over(dropper_button_layout.bounds()) {
+                if dropper_button_layout_opt
+                    .as_ref()
+                    .is_some_and(|l| cursor.is_over(l.bounds()))
+                {
                     self.state.dropper_pressed = true;
                 }
                 if cursor.is_over(submit_button_layout.bounds()) {
                     self.state.submit_pressed = true;
                 }
-                if cursor.is_over(_reset_button_layout.bounds()) {
+                if cursor.is_over(reset_button_layout.bounds()) {
                     self.state.reset_pressed = true;
                 }
             }
@@ -2149,7 +2789,7 @@ where
                 self.state.submit_pressed = false;
                 // Releasing inside the Reset button resets the color to the
                 // initial one (Qt behavior: the dialog stays open).
-                if self.state.reset_pressed && cursor.is_over(_reset_button_layout.bounds()) {
+                if self.state.reset_pressed && cursor.is_over(reset_button_layout.bounds()) {
                     self.state.reset_pressed = false;
                     self.state.apply_color(self.state.initial_color);
                     self.state.sync_display();
@@ -2165,22 +2805,25 @@ where
 
         // The eyedropper button publishes a fake message (submit_button
         // pattern); a non-empty list means it was pressed and the capture
-        // round-trip should start.
-        let mut dropper_messages: Vec<Message> = Vec::new();
-        self.dropper_button.update(
-            &mut self.tree.children[0],
-            event,
-            dropper_button_layout,
-            cursor,
-            renderer,
-            clipboard,
-            &mut Shell::new(&mut dropper_messages),
-            &layout.bounds(),
-        );
+        // round-trip should start. It lives beside the hue slider, so it
+        // only exists in the Color tab.
+        if let Some(dropper_button_layout) = dropper_button_layout_opt {
+            let mut dropper_messages: Vec<Message> = Vec::new();
+            self.dropper_button.update(
+                &mut self.tree.children[0],
+                event,
+                dropper_button_layout,
+                cursor,
+                renderer,
+                clipboard,
+                &mut Shell::new(&mut dropper_messages),
+                &layout.bounds(),
+            );
 
-        if !dropper_messages.is_empty() && self.request_dropper_capture(shell) {
-            shell.capture_event();
-            shell.request_redraw();
+            if !dropper_messages.is_empty() && self.request_dropper_capture(shell) {
+                shell.capture_event();
+                shell.request_redraw();
+            }
         }
 
         self.submit_button.update(
@@ -2356,205 +2999,145 @@ where
         cursor: Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        // While the eye dropper is active the whole dialog acts as a
-        // crosshair sampling surface.
         if self.state.dropper_mode != DropperMode::Idle {
             return mouse::Interaction::Crosshair;
         }
-
         let mut children = layout.children();
+        let mut interaction = mouse::Interaction::default();
+        let is_color = self.state.picker_tab == PickerTab::Color;
+        let is_library = !is_color;
 
-        let mouse_interaction = mouse::Interaction::default();
-
-        // Block 1 (left pane)
-        let block1_layout = children
-            .next()
-            .expect("Graphics: Layout should have a 1. block layout");
-        let mut block1_mouse_interaction = mouse::Interaction::default();
-        let mut block1_children = block1_layout.children();
-
-        // Picker: ring + square
-        let picker_layout = block1_children
-            .next()
-            .expect("Graphics: Layout should have a picker layout");
-        let mut picker_children = picker_layout.children();
-        let square_layout = picker_children
-            .next()
-            .expect("Graphics: Layout should have a sat/value layout");
-        if cursor.is_over(square_layout.bounds()) {
-            block1_mouse_interaction = block1_mouse_interaction.max(mouse::Interaction::Pointer);
+        let top_tabs_layout = children.next().expect("Graphics: Layout should have top tabs");
+        if top_tabs_layout.bounds().height > 0.0 && cursor.is_over(top_tabs_layout.bounds()) {
+            interaction = interaction.max(mouse::Interaction::Pointer);
         }
-        let ring_layout = picker_children
-            .next()
-            .expect("Graphics: Layout should have a hue layout");
-        if cursor
-            .position_in(ring_layout.bounds())
-            .is_some_and(|position| is_in_ring_band(position, ring_layout.bounds().size()))
-        {
-            block1_mouse_interaction = block1_mouse_interaction.max(mouse::Interaction::Pointer);
-        }
-
-        let _tab_bar_layout = block1_children
-            .next()
-            .expect("Graphics: Layout should have a tab bar layout");
-
-        // Slider rows
-        let controls_layout = block1_children
-            .next()
-            .expect("Graphics: Layout should have a controls layout");
-        let mut controls_children = controls_layout.children();
-
-        let f = |layout: Layout<'_>, cursor: Cursor| {
-            let mut children = layout.children();
-
-            let _label_layout = children.next();
-            let bar_layout = children
-                .next()
-                .expect("Graphics: Layout should have a bar layout");
-
-            if cursor.is_over(bar_layout.bounds()) {
-                mouse::Interaction::ResizingHorizontally
-            } else {
-                mouse::Interaction::default()
+        let _preview_layout = children.next();
+        let picker_layout = children.next().expect("Graphics: Layout should have picker");
+        if is_color {
+            let mut picker_children = picker_layout.children();
+            if let Some(square) = picker_children.next()
+                && cursor.is_over(square.bounds())
+            {
+                interaction = interaction.max(mouse::Interaction::Pointer);
             }
-        };
-        for _ in 0..4 {
-            if let Some(row_layout) = controls_children.next() {
-                block1_mouse_interaction =
-                    block1_mouse_interaction.max(f(row_layout, cursor));
+            if let Some(hue) = picker_children.next()
+                && cursor.is_over(hue.bounds())
+            {
+                interaction = interaction.max(mouse::Interaction::ResizingHorizontally);
             }
         }
-
-        // Text inputs: hex at the bottom, channel fields of the active tab.
-        let hex_layout = block1_children
-            .next()
-            .expect("Graphics: Layout should have a hex container layout");
-        if let Some(tree_child) = self.tree.children.get(HEX_INPUT_INDEX)
+        let _tab_bar_layout = children.next();
+        let controls_layout = children.next().expect("Graphics: Layout should have controls");
+        if is_color {
+            for row_layout in controls_layout.children() {
+                let mut row_children = row_layout.children();
+                let _ = row_children.next();
+                if let Some(bar) = row_children.next()
+                    && cursor.is_over(bar.bounds())
+                {
+                    interaction = interaction.max(mouse::Interaction::ResizingHorizontally);
+                }
+            }
+        }
+        let hex_layout = children.next().expect("Graphics: Layout should have hex");
+        if is_color
+            && let Some(tree_child) = self.tree.children.get(HEX_INPUT_INDEX)
             && let Some(input_layout) = hex_input_layout(hex_layout)
         {
-            let hex_interaction = self.hex_input.mouse_interaction(
+            interaction = interaction.max(self.hex_input.mouse_interaction(
                 tree_child,
                 input_layout,
                 cursor,
                 &input_layout.bounds(),
                 renderer,
-            );
-            block1_mouse_interaction = block1_mouse_interaction.max(hex_interaction);
+            ));
         }
-        for i in self.active_tab_channels() {
-            if self.tree.children.len() <= VALUE_INPUTS_INDEX + i {
-                continue;
+        if is_color {
+            for i in self.active_tab_channels() {
+                if self.tree.children.len() <= VALUE_INPUTS_INDEX + i {
+                    continue;
+                }
+                if let Some(input_layout) = value_cell_layout(controls_layout, self, i) {
+                    interaction = interaction.max(self.value_inputs[i].mouse_interaction(
+                        &self.tree.children[VALUE_INPUTS_INDEX + i],
+                        input_layout,
+                        cursor,
+                        &input_layout.bounds(),
+                        renderer,
+                    ));
+                }
             }
-            let Some(input_layout) = value_cell_layout(controls_layout, self, i) else {
-                continue;
-            };
-            let input_interaction = self.value_inputs[i].mouse_interaction(
-                &self.tree.children[VALUE_INPUTS_INDEX + i],
-                input_layout,
-                cursor,
-                &input_layout.bounds(),
-                renderer,
-            );
-            block1_mouse_interaction = block1_mouse_interaction.max(input_interaction);
         }
-
-        // Block 2 (right pane)
-        let block2_layout = children
+        let _ = children.next();
+        let swatch_tab_bar_layout = children.next().expect("Graphics: Layout should have swatch tabs");
+        let swatch_page_layout = children.next().expect("Graphics: Layout should have swatch page");
+        // Add-button wrapper has one centered child.
+        let add_btn_wrapper = children.next().expect("Graphics: Layout should have add button");
+        let add_btn_bounds = add_btn_wrapper
+            .children()
             .next()
-            .expect("Graphics: Layout should have a 2. block layout");
-        let mut block2_mouse_interaction = mouse::Interaction::default();
-        let mut block2_children = block2_layout.children();
-
-        // Swatch section: tab bar, grid cells, add button and the name
-        // prompt of the open "new swatch set" flow.
-        let _preview_layout = block2_children.next();
-        let _swatch_label_layout = block2_children.next();
-        let swatch_tab_bar_layout = block2_children
-            .next()
-            .expect("Graphics: Layout should have a swatch tab bar layout");
-        let swatch_page_layout = block2_children
-            .next()
-            .expect("Graphics: Layout should have a swatch tab page layout");
-        let add_btn_layout = block2_children
-            .next()
-            .expect("Graphics: Layout should have an add-swatch button layout");
-
-        if cursor.is_over(swatch_tab_bar_layout.bounds())
-            || cursor.is_over(add_btn_layout.bounds())
+            .map(|l| l.bounds())
+            .unwrap_or(add_btn_wrapper.bounds());
+        if is_library
+            && (cursor.is_over(swatch_tab_bar_layout.bounds()) || cursor.is_over(add_btn_bounds))
         {
-            block2_mouse_interaction =
-                block2_mouse_interaction.max(mouse::Interaction::Pointer);
+            interaction = interaction.max(mouse::Interaction::Pointer);
         }
-        // Only real strip cells (not placeholder wells) are interactive.
-        let active_set_cells = if self.state.naming_new_set {
-            0
-        } else {
-            self.state
-                .swatch_sets
-                .get(self.state.active_swatch_tab)
-                .map_or(0, |set| set.colors.len())
+        if is_library {
+            let active_set_cells = if self.state.naming_new_set {
+                0
+            } else {
+                self.state
+                    .swatch_sets
+                    .get(self.state.active_swatch_tab)
+                    .map_or(0, |set| set.colors.len())
+            };
+            for (i, cell) in swatch_page_layout.children().enumerate() {
+                if i < active_set_cells && cursor.is_over(cell.bounds()) {
+                    interaction = interaction.max(mouse::Interaction::Pointer);
+                }
+            }
+            if self.state.naming_new_set {
+                let (_, add_rect, cancel_rect) = name_prompt_rects(swatch_page_layout.bounds());
+                if cursor.is_over(add_rect) || cursor.is_over(cancel_rect) {
+                    interaction = interaction.max(mouse::Interaction::Pointer);
+                }
+            }
+        }
+        let _ = children.next();
+        let _ = children.next();
+        let recent_grid_layout = children.next().expect("Graphics: Layout should have recent grid");
+        {
+            let recent_cells = self.state.recent_colors.len();
+            for (i, cell) in recent_grid_layout.children().enumerate() {
+                if i < recent_cells && cursor.is_over(cell.bounds()) {
+                    interaction = interaction.max(mouse::Interaction::Pointer);
+                }
+            }
+        }
+        // Eyedropper beside the hue slider (Color tab only).
+        if is_color && let Some(dropper_layout) = picker_layout.children().nth(2) {
+            interaction = interaction.max(self.dropper_button.mouse_interaction(
+                &self.tree.children[0],
+                dropper_layout,
+                cursor,
+                &self.viewport,
+                renderer,
+            ));
+        }
+        let buttons_node = children.next().expect("Graphics: Layout should have buttons");
+        let mut buttons_layout = buttons_node.children();
+        let _ = buttons_layout.next();
+        let Some(submit_button_layout) = buttons_layout.next() else {
+            return interaction;
         };
-        for (i, cell) in swatch_page_layout.children().enumerate() {
-            if i < active_set_cells && cursor.is_over(cell.bounds()) {
-                block2_mouse_interaction =
-                    block2_mouse_interaction.max(mouse::Interaction::Pointer);
-            }
-        }
-        if self.state.naming_new_set {
-            let (_, add_rect, cancel_rect) = name_prompt_rects(swatch_page_layout.bounds());
-            if cursor.is_over(add_rect) || cursor.is_over(cancel_rect) {
-                block2_mouse_interaction =
-                    block2_mouse_interaction.max(mouse::Interaction::Pointer);
-            }
-        }
-
-        let _divider_layout = block2_children.next();
-        let _recent_label_layout = block2_children.next();
-        let recent_grid_layout = block2_children
-            .next()
-            .expect("Graphics: Layout should have a recent grid layout");
-        let recent_cells = self.state.recent_colors.len();
-        for (i, cell) in recent_grid_layout.children().enumerate() {
-            if i < recent_cells && cursor.is_over(cell.bounds()) {
-                block2_mouse_interaction =
-                    block2_mouse_interaction.max(mouse::Interaction::Pointer);
-            }
-        }
-
-        let mut buttons_layout = block2_children
-            .next()
-            .expect("Graphics: Layout should have a buttons layout")
-            .children();
-        let _reset_button_layout = buttons_layout
-            .next()
-            .expect("Graphics: Layout should have a reset button layout");
-        let dropper_button_layout = buttons_layout
-            .next()
-            .expect("Graphics: Layout should have an eyedropper button layout for a ColorPicker");
-        let dropper_mouse_interaction = self.dropper_button.mouse_interaction(
-            &self.tree.children[0],
-            dropper_button_layout,
-            cursor,
-            &self.viewport,
-            renderer,
-        );
-
-        let submit_button_layout = buttons_layout
-            .next()
-            .expect("Graphics: Layout should have a submit button layout for a ColorPicker");
-        let submit_mouse_interaction = self.submit_button.mouse_interaction(
+        interaction.max(self.submit_button.mouse_interaction(
             &self.tree.children[1],
             submit_button_layout,
             cursor,
             &self.viewport,
             renderer,
-        );
-
-        mouse_interaction
-            .max(block1_mouse_interaction)
-            .max(block2_mouse_interaction)
-            .max(dropper_mouse_interaction)
-            .max(submit_mouse_interaction)
+        ))
     }
 
     /// The operation support of the dialog content.
@@ -2564,49 +3147,30 @@ where
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        let mut children = layout.children();
-
-        // Skip block 1 (left pane)
-        let _block1_layout = children.next();
-
-        // Block 2 contains the buttons
-        if let Some(block2_layout) = children.next() {
-            let mut block2_children = block2_layout.children();
-
-            // Skip previews, swatches and recent grids / labels / divider
-            let _preview_layout = block2_children.next();
-            let _swatch_label_layout = block2_children.next();
-            let _tab_bar_layout = block2_children.next();
-            let _tab_page_layout = block2_children.next();
-            let _add_btn_layout = block2_children.next();
-            let _divider_layout = block2_children.next();
-            let _recent_label_layout = block2_children.next();
-            let _recent_grid_layout = block2_children.next();
-
-            // Operate on the buttons row
-            if let Some(buttons_layout) = block2_children.next() {
-                let mut button_children = buttons_layout.children();
-                let _reset_layout = button_children.next();
-
-                if let Some(dropper_layout) = button_children.next() {
-                    Widget::operate(
-                        &mut self.dropper_button,
-                        &mut self.tree.children[0],
-                        dropper_layout,
-                        renderer,
-                        operation,
-                    );
-                }
-
-                if let Some(submit_layout) = button_children.next() {
-                    Widget::operate(
-                        &mut self.submit_button,
-                        &mut self.tree.children[1],
-                        submit_layout,
-                        renderer,
-                        operation,
-                    );
-                }
+        // Picker is child [2]; its third child is the eyedropper beside hue.
+        if let Some(picker_layout) = layout.children().nth(2)
+            && let Some(dropper_layout) = picker_layout.children().nth(2)
+        {
+            Widget::operate(
+                &mut self.dropper_button,
+                &mut self.tree.children[0],
+                dropper_layout,
+                renderer,
+                operation,
+            );
+        }
+        // Buttons row is child [13] of the single column: [reset, submit].
+        if let Some(buttons_layout) = layout.children().nth(13) {
+            let mut button_children = buttons_layout.children();
+            let _reset_layout = button_children.next();
+            if let Some(submit_layout) = button_children.next() {
+                Widget::operate(
+                    &mut self.submit_button,
+                    &mut self.tree.children[1],
+                    submit_layout,
+                    renderer,
+                    operation,
+                );
             }
         }
     }
@@ -2664,33 +3228,148 @@ where
             );
         }
 
-        // ----------- Block 1 ----------------------
-        let block1_layout = children
-            .next()
-            .expect("Graphics: Layout should have a 1. block layout");
-        block1(
-            renderer,
-            self,
-            block1_layout,
-            cursor,
-            theme,
-            style,
-            &style_sheet,
-        );
-
-        // ----------- Block 2 ----------------------
-        let block2_layout = children
-            .next()
-            .expect("Graphics: Layout should have a 2. block layout");
-        block2(
-            renderer,
-            self,
-            block2_layout,
-            cursor,
-            theme,
-            style,
-            &style_sheet,
-        );
+        // Single column: [0]top [1]preview [2]picker [3]subtabs [4]controls
+        // [5]hex [6]swlabel [7]swtabs [8]swpage [9]add [10]div [11]reclabel
+        // [12]recgrid [13]buttons
+        let is_color = self.state.picker_tab == PickerTab::Color;
+        let is_library = !is_color;
+        let top_tabs_layout = children.next().expect("Graphics: Layout should have top tabs");
+        if top_tabs_layout.bounds().height > 0.0 {
+            draw_top_tabs(renderer, self, top_tabs_layout, cursor, &style_sheet);
+        }
+        let preview_layout = children.next().expect("Graphics: Layout should have preview");
+        preview_placeholder(renderer, self, preview_layout, cursor, &style_sheet);
+        let picker_layout = children.next().expect("Graphics: Layout should have picker");
+        if is_color {
+            hsv_color(renderer, self, picker_layout, cursor, &style_sheet);
+            // Eyedropper icon button on the right of the hue slider.
+            if let Some(dropper_layout) = picker_layout.children().nth(2) {
+                let disabled = self.dropper_buffer.is_none();
+                draw_icon_overlay_button(
+                    renderer,
+                    theme,
+                    EYEDROPPER_SVG,
+                    dropper_layout.bounds(),
+                    self.state.dropper_pressed,
+                    cursor,
+                    disabled,
+                );
+                draw_focus_border(
+                    renderer,
+                    self,
+                    dropper_layout.bounds(),
+                    Focus::Dropper,
+                    &style_sheet,
+                );
+            }
+        }
+        let tab_bar_layout = children.next().expect("Graphics: Layout should have tab bar");
+        if is_color {
+            tab_bar_placeholder(renderer, self, tab_bar_layout, cursor, &style_sheet);
+        }
+        let controls_layout = children.next().expect("Graphics: Layout should have controls");
+        if is_color {
+            slider_rows(
+                renderer,
+                self,
+                controls_layout,
+                cursor,
+                theme,
+                style,
+                &style_sheet,
+                self.state.focus,
+            );
+        }
+        let hex_layout = children.next().expect("Graphics: Layout should have hex");
+        if is_color {
+            hex_input(renderer, theme, self, hex_layout, cursor, &style_sheet);
+        }
+        let swatch_label_layout = children.next();
+        if is_library && let Some(l) = swatch_label_layout {
+            draw_section_heading(
+                renderer,
+                l,
+                "Swatches",
+                style_sheet[&StyleState::Active].text_secondary,
+            );
+        }
+        let swatch_tab_bar_layout = children.next().expect("Graphics: Layout should have swatch tabs");
+        if is_library {
+            swatch_tab_bar(renderer, self, swatch_tab_bar_layout, cursor, &style_sheet);
+        }
+        let swatch_page_layout = children.next().expect("Graphics: Layout should have swatch page");
+        if is_library {
+            swatch_page(renderer, theme, self, swatch_page_layout, cursor, &style_sheet);
+        }
+        let add_btn_wrapper = children.next().expect("Graphics: Layout should have add button");
+        if is_library && let Some(add_btn_layout) = add_btn_wrapper.children().next() {
+            draw_add_button(renderer, add_btn_layout, cursor, &style_sheet);
+        }
+        let divider_layout = children.next();
+        if is_library && let Some(l) = divider_layout {
+            let bounds = l.bounds();
+            if (bounds.width > 0.) && (bounds.height > 0.) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        ..renderer::Quad::default()
+                    },
+                    style_sheet[&StyleState::Active].panel_border_color,
+                );
+            }
+        }
+        let recent_label_layout = children.next();
+        if is_library && let Some(l) = recent_label_layout {
+            draw_section_heading(
+                renderer,
+                l,
+                "Recent",
+                style_sheet[&StyleState::Active].text_secondary,
+            );
+        }
+        let recent_grid_layout = children.next().expect("Graphics: Layout should have recent grid");
+        if recent_grid_layout.bounds().height > 0.0 {
+            draw_recent_grid(renderer, self, recent_grid_layout, cursor, &style_sheet);
+        }
+        let buttons_node = children.next().expect("Graphics: Layout should have buttons");
+        {
+            let mut button_children = buttons_node.children();
+            let Some(reset_layout) = button_children.next() else {
+                return;
+            };
+            draw_reset_button(
+                renderer,
+                reset_layout.bounds(),
+                self.state.reset_pressed,
+                cursor,
+                &style_sheet,
+            );
+            let Some(submit_layout) = button_children.next() else {
+                return;
+            };
+            draw_overlay_button(
+                renderer,
+                theme,
+                ok_icon().0,
+                submit_layout.bounds(),
+                self.state.submit_pressed,
+                cursor,
+            );
+            draw_focus_border(
+                renderer,
+                self,
+                reset_layout.bounds(),
+                Focus::Reset,
+                &style_sheet,
+            );
+            draw_focus_border(
+                renderer,
+                self,
+                submit_layout.bounds(),
+                Focus::Submit,
+                &style_sheet,
+            );
+        }
 
         // Eye dropper magnifier lens for the floating window shell, drawn
         // last so it floats above every dialog element. The inline widget
@@ -3026,17 +3705,46 @@ where
             Size::new(dialog_bounds.width, HEADER_HEIGHT),
         );
         let close_rect = close_button_rect(header_rect);
+        let (top_color_rect, top_library_rect) = top_tab_rects(header_rect);
 
         let on_close = self.on_close.clone();
 
-        // Window chrome interactions: dragging by the header and the close
-        // ("x") button. Mirrors the `ColorBarDragged` press/move/release
-        // idiom used by the color controls.
+        // Header hover bookkeeping for the top tabs.
+        if matches!(
+            event,
+            Event::Mouse(
+                mouse::Event::CursorMoved { .. }
+                    | mouse::Event::ButtonPressed(_)
+                    | mouse::Event::ButtonReleased(_),
+            ) | Event::Touch(touch::Event::FingerMoved { .. })
+        ) {
+            self.content.state.top_color_hovered = cursor.is_over(top_color_rect);
+            self.content.state.top_library_hovered = cursor.is_over(top_library_rect);
+        }
+
+        // Window chrome interactions: top tabs, dragging by the header and
+        // the close ("x") button.
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if cursor.is_over(close_rect) {
                     self.content.state.close_pressed = true;
+                    shell.capture_event();
+                } else if cursor.is_over(top_color_rect) {
+                    if self.content.state.picker_tab != PickerTab::Color {
+                        self.content.state.picker_tab = PickerTab::Color;
+                        self.content.state.focus = Focus::TopColor;
+                        shell.invalidate_layout();
+                        shell.request_redraw();
+                    }
+                    shell.capture_event();
+                } else if cursor.is_over(top_library_rect) {
+                    if self.content.state.picker_tab != PickerTab::Library {
+                        self.content.state.picker_tab = PickerTab::Library;
+                        self.content.state.focus = Focus::TopLibrary;
+                        shell.invalidate_layout();
+                        shell.request_redraw();
+                    }
                     shell.capture_event();
                 } else if cursor.is_over(header_rect)
                     && let Some(grab) = cursor.land().position()
@@ -3132,8 +3840,12 @@ where
             Size::new(layout.bounds().width, HEADER_HEIGHT),
         );
         let close_rect = close_button_rect(header_rect);
+        let (top_color_rect, top_library_rect) = top_tab_rects(header_rect);
 
-        if cursor.is_over(close_rect) {
+        if cursor.is_over(close_rect)
+            || cursor.is_over(top_color_rect)
+            || cursor.is_over(top_library_rect)
+        {
             interaction = interaction.max(mouse::Interaction::Pointer);
         } else if cursor.is_over(header_rect) || self.is_dragging() {
             interaction = interaction.max(mouse::Interaction::Grabbing);
@@ -3208,6 +3920,18 @@ where
             active.header_border_color,
         );
 
+        // Top-level tabs on the left of the draggable header.
+        draw_header_tabs(
+            renderer,
+            header_bounds,
+            self.content.state.picker_tab,
+            self.content.state.top_color_hovered,
+            self.content.state.top_library_hovered,
+            cursor,
+            &active,
+            active.tab_selected_background,
+        );
+
         // Close ("x") button.
         let close_rect = close_button_rect(header_bounds);
         let hovered = cursor.is_over(close_rect);
@@ -3231,25 +3955,16 @@ where
             },
             close_background,
         );
-        renderer.fill_text(
-            Text {
-                content: close_symbol().to_owned(),
-                bounds: close_rect.size(),
-                size: Pixels(14.0),
-                font: Font::default(),
-                align_x: text::Alignment::Center,
-                align_y: Vertical::Center,
-                line_height: text::LineHeight::Relative(1.0),
-                shaping: text::Shaping::Basic,
-                wrapping: text::Wrapping::None,
-            },
-            close_rect.center(),
+        draw_svg_icon(
+            renderer,
+            CANCEL_SVG,
+            close_rect,
+            header_bounds,
             if hovered || pressed {
                 active.text_primary
             } else {
                 active.close_symbol_color
             },
-            close_rect,
         );
 
         self.content.draw_content(
@@ -3261,6 +3976,8 @@ where
 
 /// Defines the layout of the left pane: picker (ring + sat/value square),
 /// tab bar, slider controls column and the hex container.
+/// Legacy two-pane helper, kept but unused by the single-column layout.
+#[allow(dead_code)]
 fn left_pane_layout<'a, Message, Theme>(
     color_picker: &mut ColorPickerOverlay<'_, '_, Message, Theme>,
     renderer: &Renderer,
@@ -3328,11 +4045,10 @@ where
         )
         .move_to(Point::new(LABEL_WIDTH, y));
 
-        // The value cells host the channel [`TextInput`]s of the active tab;
-        // the readonly alpha cell of the HSV tab is a plain text cell.
+        // The value cells host the channel [`TextInput`]s of the active tab.
         let value_input_index = match (color_picker.state.active_tab, row) {
             (ActiveTab::Rgb, i) => Some(i),
-            (ActiveTab::Hsv, 3) => None,
+            (ActiveTab::Hsv, 3) => Some(3),
             (ActiveTab::Hsv, i) => Some(4 + i),
         };
         let value_child = if let Some(value_input_index) = value_input_index {
@@ -3397,11 +4113,12 @@ where
         );
 
     let hex_label_node = Node::with_children(
-        Size::new(32.0, HEX_CONTAINER_HEIGHT),
+        Size::new(HEX_LABEL_WIDTH, HEX_CONTAINER_HEIGHT),
         Vec::new(),
     )
     .move_to(Point::new(0.0, 0.0));
-    hex_input_node = hex_input_node.move_to(Point::new(32.0, 0.0));
+    let legacy_input_y = ((HEX_CONTAINER_HEIGHT - hex_input_node.size().height) / 2.0).max(0.0);
+    hex_input_node = hex_input_node.move_to(Point::new(HEX_LABEL_WIDTH, legacy_input_y));
     let hex_node = Node::with_children(
         Size::new(RING_DIM, HEX_CONTAINER_HEIGHT),
         vec![hex_label_node, hex_input_node],
@@ -3431,8 +4148,14 @@ where
     left_pane.move_to(Point::new(bounds.x, bounds.y))
 }
 
-/// Height of the hex container.
-const HEX_CONTAINER_HEIGHT: f32 = 44.0;
+/// Height of the hex container. Just enough for a single-line input plus a
+/// slim panel padding.
+const HEX_CONTAINER_HEIGHT: f32 = 32.0;
+/// Width of the "Hex:" label cell. Wide enough for the 4-char label at the
+/// default text size without touching the container/input edges.
+const HEX_LABEL_WIDTH: f32 = 40.0;
+/// Right inset of the hex `TextInput` from the container border.
+const HEX_INPUT_RIGHT_INSET: f32 = 4.0;
 /// Height of the preview area (panels + labels) in the right pane.
 const PREVIEW_AREA_HEIGHT: f32 = PREVIEW_HEIGHT + 18.0 + 2.0;
 /// Margin of the swatch strips inside the tab page.
@@ -3442,6 +4165,15 @@ const SWATCH_PAGE_MARGIN: f32 = 5.0;
 const STRIP_HEIGHT: f32 = STRIP_ROWS as f32 * SWATCH_SIZE
     + (STRIP_ROWS - 1) as f32 * GRID_SPACING
     + 2.0 * SWATCH_PAGE_MARGIN;
+/// Vertical margin above/below the cells of the mirrored single-row recent
+/// strip. Slimmer than [`SWATCH_PAGE_MARGIN`] so the Color-tab mirror stays
+/// compact.
+const RECENT_SINGLE_VERT_MARGIN: f32 = 2.0;
+/// The fixed height of the mirrored single-row recent strip shown in the
+/// Color tab below the hex input.
+const RECENT_SINGLE_ROW_HEIGHT: f32 = SWATCH_SIZE + 2.0 * RECENT_SINGLE_VERT_MARGIN;
+/// The row count of the mirrored single-row recent strip.
+const RECENT_SINGLE_ROWS: usize = 1;
 /// Height of the "new swatch set" name prompt band, centered vertically
 /// inside the tab page.
 const NAME_PROMPT_HEIGHT: f32 = 32.0;
@@ -3451,13 +4183,16 @@ const LABEL_HEIGHT: f32 = 18.0;
 const DIVIDER_HEIGHT: f32 = 2.0;
 /// Height of the buttons row in the right pane.
 const BUTTONS_HEIGHT: f32 = 32.0;
-/// Width of the Reset button.
-const RESET_WIDTH: f32 = 64.0;
+/// Width of the Reset icon button (square).
+const RESET_WIDTH: f32 = 32.0;
 /// Spacing between the right pane children.
+#[allow(dead_code)]
 const RIGHT_PANE_SPACING: f32 = 10.0;
 
 /// Defines the layout of the right pane: previews, swatches, recent colors
 /// and the Reset/Eyedropper/OK buttons.
+/// Legacy two-pane helper, kept but unused by the single-column layout.
+#[allow(dead_code)]
 fn right_pane_layout<'a, Message, Theme>(
     color_picker: &mut ColorPickerOverlay<'_, '_, Message, Theme>,
     renderer: &Renderer,
@@ -3690,9 +4425,174 @@ where
     right_pane.move_to(Point::new(bounds.x, bounds.y))
 }
 
+/// Draws the top-level `[Color | Library]` tabs of the single column
+/// (inline mode) or the draggable header (floating mode calls this with the
+/// header rects).
+fn draw_top_tabs<Message, Theme>(
+    renderer: &mut Renderer,
+    color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
+    layout: Layout<'_>,
+    cursor: Cursor,
+    style_sheet: &HashMap<StyleState, Style>,
+) where
+    Message: Clone,
+    Theme: style::Catalog + iced::widget::button::Catalog + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    let active_style = style_sheet[&StyleState::Active];
+    let bounds = layout.bounds();
+    let gap = 6.0;
+    let w = (bounds.width - gap) / 2.0;
+    let tabs = [
+        ("Color", PickerTab::Color, bounds.x, color_picker.state.top_color_hovered),
+        (
+            "Library",
+            PickerTab::Library,
+            bounds.x + w + gap,
+            color_picker.state.top_library_hovered,
+        ),
+    ];
+    for (label, tab, x, hovered_flag) in tabs {
+        let tab_bounds = Rectangle {
+            x,
+            y: bounds.y,
+            width: w,
+            height: bounds.height,
+        };
+        let selected = color_picker.state.picker_tab == tab;
+        let background = if selected {
+            style_sheet[&StyleState::Selected].tab_selected_background
+        } else if cursor.is_over(tab_bounds) || hovered_flag {
+            active_style.tab_hover_background
+        } else {
+            active_style.tab_background
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: tab_bounds,
+                border: Border {
+                    radius: Radius::default().top(5.0),
+                    width: 1.0,
+                    color: active_style.tab_border_color,
+                },
+                ..renderer::Quad::default()
+            },
+            background,
+        );
+        renderer.fill_text(
+            Text {
+                content: label.to_owned(),
+                bounds: Size::new(tab_bounds.width, tab_bounds.height),
+                size: renderer.default_size(),
+                font: renderer.default_font(),
+                align_x: text::Alignment::Center,
+                align_y: Vertical::Center,
+                line_height: text::LineHeight::Relative(1.3),
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            },
+            Point::new(tab_bounds.center_x(), tab_bounds.center_y()),
+            if selected {
+                active_style.text_primary
+            } else {
+                active_style.text_secondary
+            },
+            tab_bounds,
+        );
+    }
+    let focus_target = match color_picker.state.focus {
+        Focus::TopColor | Focus::TopLibrary => Some(color_picker.state.focus),
+        _ => None,
+    };
+    if let Some(target) = focus_target {
+        let gap = 6.0;
+        let w = (bounds.width - gap) / 2.0;
+        let fb = if target == Focus::TopColor {
+            Rectangle {
+                x: bounds.x,
+                y: bounds.y,
+                width: w,
+                height: bounds.height,
+            }
+        } else {
+            Rectangle {
+                x: bounds.x + w + gap,
+                y: bounds.y,
+                width: w,
+                height: bounds.height,
+            }
+        };
+        draw_focus_border(renderer, color_picker, fb, target, style_sheet);
+    }
+}
+
+/// Draws header tabs of the floating window shell.
+fn draw_header_tabs(
+    renderer: &mut Renderer,
+    header: Rectangle,
+    picker_tab: PickerTab,
+    top_color_hovered: bool,
+    top_library_hovered: bool,
+    cursor: Cursor,
+    style: &Style,
+    selected_tab_bg: Background,
+) {
+    let (color_rect, library_rect) = top_tab_rects(header);
+    for (rect, label, selected, hovered) in [
+        (color_rect, "Color", picker_tab == PickerTab::Color, top_color_hovered),
+        (
+            library_rect,
+            "Library",
+            picker_tab == PickerTab::Library,
+            top_library_hovered,
+        ),
+    ] {
+        let background = if selected {
+            selected_tab_bg
+        } else if cursor.is_over(rect) || hovered {
+            style.tab_hover_background
+        } else {
+            style.tab_background
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: rect,
+                border: Border {
+                    radius: 5.0.into(),
+                    width: 1.0,
+                    color: style.tab_border_color,
+                },
+                ..renderer::Quad::default()
+            },
+            background,
+        );
+        renderer.fill_text(
+            Text {
+                content: label.to_owned(),
+                bounds: rect.size(),
+                size: Pixels(12.0),
+                font: Font::default(),
+                align_x: text::Alignment::Center,
+                align_y: Vertical::Center,
+                line_height: text::LineHeight::Relative(1.0),
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            },
+            rect.center(),
+            if selected {
+                style.text_primary
+            } else {
+                style.text_secondary
+            },
+            rect,
+        );
+    }
+}
+
 /// Draws the left pane: picker (ring + sat/value square), tab bar
 /// placeholder, slider controls and the hex container.
-#[allow(clippy::too_many_arguments)]
+/// Legacy two-pane helper, kept but unused by the single-column layout.
+#[allow(dead_code, clippy::too_many_arguments)]
 fn block1<Message, Theme>(
     renderer: &mut Renderer,
     color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
@@ -3764,7 +4664,7 @@ fn block1<Message, Theme>(
     // ----------- Block 1 end ------------------
 }
 
-/// Draws a placeholder for the RGB(A)/HSV tab bar.
+/// Draws a placeholder for the HSV/RGB(A) tab bar.
 fn tab_bar_placeholder<Message, Theme>(
     renderer: &mut Renderer,
     color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
@@ -3781,7 +4681,7 @@ fn tab_bar_placeholder<Message, Theme>(
     let gap = 2.0;
     let half = (bounds.width - gap) / 2.0;
 
-    let tabs = [("RGB(A)", ActiveTab::Rgb, 0.0), ("HSV", ActiveTab::Hsv, half + gap)];
+    let tabs = [("HSV", ActiveTab::Hsv, 0.0), ("RGB(A)", ActiveTab::Rgb, half + gap)];
 
     for (label, tab, x) in tabs {
         let tab_bounds = Rectangle {
@@ -3843,7 +4743,8 @@ fn tab_bar_placeholder<Message, Theme>(
 
 /// Draws the right pane: previews, swatch tab bar + page + add button,
 /// recent heading (grid drawn in a later feature) and the buttons.
-#[allow(clippy::too_many_arguments)]
+/// Legacy two-pane helper, kept but unused by the single-column layout.
+#[allow(dead_code, clippy::too_many_arguments)]
 fn block2<Message, Theme>(
     renderer: &mut Renderer,
     color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
@@ -4651,7 +5552,7 @@ fn preview_placeholder<Message, Theme>(
     }
 }
 
-/// Draws the Reset button with its danger palette colors.
+/// Draws the Reset icon button with its danger palette colors.
 fn draw_reset_button(
     renderer: &mut Renderer,
     bounds: Rectangle,
@@ -4682,22 +5583,7 @@ fn draw_reset_button(
         background,
     );
 
-    renderer.fill_text(
-        Text {
-            content: "Reset".to_owned(),
-            bounds: Size::new(bounds.width, bounds.height),
-            size: renderer.default_size(),
-            font: renderer.default_font(),
-            align_x: text::Alignment::Center,
-            align_y: Vertical::Center,
-            line_height: text::LineHeight::Relative(1.3),
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
-        },
-        Point::new(bounds.center_x(), bounds.center_y()),
-        active_style.text_primary,
-        bounds,
-    );
+    draw_svg_icon(renderer, RESET_SVG, bounds, bounds, active_style.text_primary);
 }
 
 /// Draws the focus border of the given button if it is focused.
@@ -4788,6 +5674,55 @@ fn draw_overlay_button<Theme>(
         style.text_color,
         bounds,
     );
+}
+
+/// Draws an icon button (e.g. the eyedropper) with the button-catalog
+/// background and an SVG glyph tinted with the button text color.
+/// `disabled` forces the Disabled catalog status and dims the glyph.
+fn draw_icon_overlay_button<Theme>(
+    renderer: &mut Renderer,
+    theme: &Theme,
+    icon: &'static [u8],
+    bounds: Rectangle,
+    pressed: bool,
+    cursor: Cursor,
+    disabled: bool,
+) where
+    Theme: iced::widget::button::Catalog,
+{
+    let status = if disabled {
+        button::Status::Disabled
+    } else if pressed && cursor.is_over(bounds) {
+        button::Status::Pressed
+    } else if cursor.is_over(bounds) {
+        button::Status::Hovered
+    } else {
+        button::Status::Active
+    };
+
+    let style = iced::widget::button::Catalog::style(
+        theme,
+        &<Theme as iced::widget::button::Catalog>::default(),
+        status,
+    );
+
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds,
+            border: style.border,
+            shadow: style.shadow,
+            snap: style.snap,
+        },
+        style
+            .background
+            .unwrap_or(Background::Color(Color::TRANSPARENT)),
+    );
+
+    let mut icon_color = style.text_color;
+    if disabled {
+        icon_color.a *= 0.4;
+    }
+    draw_svg_icon(renderer, icon, bounds, bounds, icon_color);
 }
 /// The total span of the magnifier pixel grid (logical pixels).
 fn lens_grid_span() -> f32 {
@@ -5065,89 +6000,70 @@ fn hsv_color<Message, Theme>(
     let hue_layout = hsv_color_children
         .next()
         .expect("Graphics: Layout should have a hue layout");
-    let mut hue_style_state = StyleState::Active;
-    if color_picker.state.focus == Focus::Ring {
-        hue_style_state = hue_style_state.max(StyleState::Focused);
-    }
-    if is_in_ring_band(
-        cursor.position_in(hue_layout.bounds()).unwrap_or(Point::ORIGIN),
-        hue_layout.bounds().size(),
-    ) {
-        hue_style_state = hue_style_state.max(StyleState::Hovered);
-    }
-
-    let geometry =
-        color_picker
-            .state
-            .hue_canvas_cache
-            .draw(renderer, hue_layout.bounds().size(), |frame| {
-                let size = frame.size();
-                let center = Point::new(size.width / 2.0, size.height / 2.0);
-                let outer = size.width.min(size.height) / 2.0;
-                let inner = outer - (RING_WIDTH + RING_PADDING);
-                let inner_sq = inner * inner;
-                let outer_sq = outer * outer;
-
-                let column_count = frame.width() as u16;
-                let row_count = frame.height() as u16;
-
-                for column in 0..column_count {
-                    for row in 0..row_count {
-                        let dx = f32::from(column) + 0.5 - center.x;
-                        let dy = f32::from(row) + 0.5 - center.y;
-                        let dist = dx * dx + dy * dy;
-
-                        if dist >= inner_sq && dist <= outer_sq {
-                            let hue = hue_from_angle(dy.atan2(dx).to_degrees());
-                            let ring_color = Color::from(Hsv::from_hsv(hue, 1.0, 1.0));
-                            frame.fill_rectangle(
-                                Point::new(f32::from(column), f32::from(row)),
-                                Size::new(1.0, 1.0),
-                                ring_color,
-                            );
-                        }
-                    }
-                }
-
-                // Indicator: white filled circle with a black outline at the
-                // center-line of the current hue angle.
-                let indicator_radius = (inner + outer) / 2.0;
-                let angle = f32::from(hsv_color.hue).to_radians();
-                let indicator_center = Point::new(
-                    center.x + angle.cos() * indicator_radius,
-                    center.y + angle.sin() * indicator_radius,
-                );
-
-                frame.fill(&Path::circle(indicator_center, 7.5), Color::WHITE);
-                frame.stroke(
-                    &Path::circle(indicator_center, 7.5),
-                    Stroke {
-                        style: canvas::Style::Solid(Color::BLACK),
-                        width: 1.5,
-                        ..Stroke::default()
-                    },
-                );
-
-                // Band border (inner + outer circle).
-                let stroke = Stroke {
-                    style: canvas::Style::Solid(
-                        style_sheet
-                            .get(&hue_style_state)
-                            .expect("Style Sheet not found.")
-                            .bar_border_color,
+    // Normal horizontal hue slider below the square, same gradient-bar look
+    // as the channel rows.
+    let hue_bounds = hue_layout.bounds();
+    if (hue_bounds.width > 0.) && (hue_bounds.height > 0.) {
+        let active_style = &style_sheet[&StyleState::Active];
+        for x in 0..hue_bounds.width as i32 {
+            let t = if hue_bounds.width > 1.0 {
+                x as f32 / (hue_bounds.width - 1.0)
+            } else {
+                0.0
+            };
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle::new(
+                        Point::new(hue_bounds.x + x as f32, hue_bounds.y),
+                        Size::new(1.0, hue_bounds.height),
                     ),
+                    ..renderer::Quad::default()
+                },
+                Color::from(Hsv::from_hsv((t * 360.0) as u16 % 360, 1.0, 1.0)),
+            );
+        }
+        let fraction = f32::from(hsv_color.hue) / 360.0;
+        let handle_center = Point::new(
+            hue_bounds.x + hue_bounds.width * fraction,
+            hue_bounds.y + hue_bounds.height / 2.0,
+        );
+        let handle_bounds = Rectangle {
+            x: handle_center.x - 8.0,
+            y: handle_center.y - 8.0,
+            width: 16.0,
+            height: 16.0,
+        };
+        let handle_background = if cursor.is_over(handle_bounds) {
+            active_style.slider_handle_hover_background
+        } else {
+            active_style.slider_handle_background
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: handle_bounds,
+                border: Border {
+                    radius: 8.0.into(),
                     width: 1.0,
-                    ..Stroke::default()
-                };
-
-                frame.stroke(&Path::circle(center, inner - 0.5), stroke);
-                frame.stroke(&Path::circle(center, outer - 0.5), stroke);
-            });
-
-    let translation = Vector::new(hue_layout.bounds().x, hue_layout.bounds().y);
-    renderer.with_translation(translation, |renderer| {
-        renderer.draw_geometry(geometry);
-    });
+                    color: active_style.slider_handle_border_color,
+                },
+                ..renderer::Quad::default()
+            },
+            handle_background,
+        );
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: hue_bounds,
+                border: Border {
+                    radius: active_style.bar_border_radius.into(),
+                    width: active_style.bar_border_width,
+                    color: active_style.slider_groove_border_color,
+                },
+                ..renderer::Quad::default()
+            },
+            Color::TRANSPARENT,
+        );
+        draw_focus_border(renderer, color_picker, hue_bounds, Focus::Ring, style_sheet);
+    }
 }
 
 /// The layout of the value cell hosting the channel input with the given
@@ -5165,6 +6081,7 @@ where
     let row = match (color_picker.state.active_tab, channel) {
         (ActiveTab::Rgb, 0..=3) => channel,
         (ActiveTab::Hsv, 4..=6) => channel - 4,
+        (ActiveTab::Hsv, 3) => 3,
         _ => return None,
     };
     controls
@@ -5267,6 +6184,7 @@ fn slider_rows<Message, Theme>(
             (ActiveTab::Hsv, 0) => 4,
             (ActiveTab::Hsv, 1) => 5,
             (ActiveTab::Hsv, 2) => 6,
+            (ActiveTab::Hsv, 3) => 3,
             _ => usize::MAX,
         };
 
@@ -5385,13 +6303,13 @@ fn slider_rows<Message, Theme>(
             );
         }
 
-        // Value field: channel TextInput (active tab) or readonly text
-        // (the alpha cell of the HSV tab).
+        // Value field: channel TextInput of the active tab.
         let value_input_index = match (color_picker.state.active_tab, row) {
             (ActiveTab::Rgb, i) => i,
             (ActiveTab::Hsv, 0) => 4,
             (ActiveTab::Hsv, 1) => 5,
             (ActiveTab::Hsv, 2) => 6,
+            (ActiveTab::Hsv, 3) => 3,
             _ => usize::MAX,
         };
         if value_input_index != usize::MAX {
@@ -5533,6 +6451,9 @@ fn hex_input<Message, Theme>(
             &input_layout.bounds(),
         );
     }
+
+    // Keyboard focus outline around the panel so tabbing to Hex is visible.
+    draw_focus_border(renderer, color_picker, bounds, Focus::Hex, style_sheet);
 }
 
 /// The state of the [`ColorPickerOverlay`].
@@ -5566,6 +6487,12 @@ pub struct State {
     pub(crate) reset_pressed: bool,
     /// The active controls tab of the left pane.
     pub(crate) active_tab: ActiveTab,
+    /// The top-level tab: raw color picking or the swatch library.
+    pub(crate) picker_tab: PickerTab,
+    /// Whether the header/content "Color" top tab is hovered.
+    pub(crate) top_color_hovered: bool,
+    /// Whether the header/content "Library" top tab is hovered.
+    pub(crate) top_library_hovered: bool,
     /// The text of the hex input field (e.g. `"#FF800080"`).
     pub(crate) hex_input: String,
     /// Whether the hex input field has the text cursor.
@@ -5702,7 +6629,10 @@ impl Default for State {
             dropper_pressed: false,
             submit_pressed: false,
             reset_pressed: false,
-            active_tab: ActiveTab::Rgb,
+            active_tab: ActiveTab::Hsv,
+            picker_tab: PickerTab::Color,
+            top_color_hovered: false,
+            top_library_hovered: false,
             hex_focused: false,
             value_focus: None,
             swatch_sets: vec![SwatchSet {
@@ -5884,10 +6814,16 @@ pub enum Focus {
     /// The overlay itself is in focus.
     Overlay,
 
-    /// The saturation and value square is in focus.
+    /// The top-level "Color" tab is in focus.
+    TopColor,
+
+    /// The top-level "Library" tab is in focus.
+    TopLibrary,
+
+    /// The hue slider below the square is in focus.
     Ring,
 
-    /// The hue ring is in focus.
+    /// The saturation/value square is in focus.
     Square,
 
     /// The red bar is in focus.
@@ -5951,42 +6887,44 @@ fn channel_focus(channel: usize) -> Focus {
 }
 
 /// The ordered focus cycle of the overlay. The channel foci of the inactive
-/// tab are skipped, and the "new swatch set" input is only reachable while
-/// the naming prompt is active.
-fn focus_cycle(active_tab: ActiveTab, naming_new_set: bool) -> Vec<Focus> {
-    let (first, second, third) = match active_tab {
-        ActiveTab::Rgb => (Focus::Red, Focus::Green, Focus::Blue),
-        ActiveTab::Hsv => (Focus::HsvHue, Focus::HsvSat, Focus::HsvVal),
-    };
-
-    let mut cycle = vec![
-        Focus::Overlay,
-        Focus::Ring,
-        Focus::Square,
-        first,
-        second,
-        third,
-        Focus::Alpha,
-        Focus::Hex,
-    ];
-    if naming_new_set {
-        cycle.push(Focus::NewSetName);
+/// tab are skipped, the swatch grid is only reachable in the Library tab,
+/// and the "new swatch set" input is only reachable while the naming prompt
+/// is active.
+fn focus_cycle(picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: bool) -> Vec<Focus> {
+    let mut cycle = vec![Focus::Overlay, Focus::TopColor, Focus::TopLibrary];
+    match picker_tab {
+        PickerTab::Color => {
+            let (first, second, third) = match active_tab {
+                ActiveTab::Rgb => (Focus::Red, Focus::Green, Focus::Blue),
+                ActiveTab::Hsv => (Focus::HsvHue, Focus::HsvSat, Focus::HsvVal),
+            };
+            cycle.extend([
+                Focus::Square,
+                Focus::Ring,
+                first,
+                second,
+                third,
+                Focus::Alpha,
+                Focus::Hex,
+                Focus::TabHsv,
+                Focus::TabRgb,
+            ]);
+        }
+        PickerTab::Library => {
+            cycle.push(Focus::Swatches);
+            if naming_new_set {
+                cycle.push(Focus::NewSetName);
+            }
+        }
     }
-    cycle.extend([
-        Focus::TabRgb,
-        Focus::TabHsv,
-        Focus::Swatches,
-        Focus::Reset,
-        Focus::Dropper,
-        Focus::Submit,
-    ]);
+    cycle.extend([Focus::Reset, Focus::Dropper, Focus::Submit]);
     cycle
 }
 
 /// Gets the next focusable element.
 #[must_use]
-fn next_focus(focus: Focus, active_tab: ActiveTab, naming_new_set: bool) -> Focus {
-    let cycle = focus_cycle(active_tab, naming_new_set);
+fn next_focus(focus: Focus, picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: bool) -> Focus {
+    let cycle = focus_cycle(picker_tab, active_tab, naming_new_set);
     let Some(position) = cycle.iter().position(|f| *f == focus) else {
         // Not part of the cycle (e.g. `None` or a channel focus of the
         // inactive tab): jump to the first element.
@@ -5997,8 +6935,13 @@ fn next_focus(focus: Focus, active_tab: ActiveTab, naming_new_set: bool) -> Focu
 
 /// Gets the previous focusable element.
 #[must_use]
-fn previous_focus(focus: Focus, active_tab: ActiveTab, naming_new_set: bool) -> Focus {
-    let cycle = focus_cycle(active_tab, naming_new_set);
+fn previous_focus(
+    focus: Focus,
+    picker_tab: PickerTab,
+    active_tab: ActiveTab,
+    naming_new_set: bool,
+) -> Focus {
+    let cycle = focus_cycle(picker_tab, active_tab, naming_new_set);
     let Some(position) = cycle.iter().position(|f| *f == focus) else {
         // Not part of the cycle: stay unfocused.
         return Focus::None;
@@ -6015,24 +6958,28 @@ mod tests {
         let mut focus = Focus::None;
         for expected in [
             Focus::Overlay,
-            Focus::Ring,
+            Focus::TopColor,
+            Focus::TopLibrary,
             Focus::Square,
+            Focus::Ring,
             Focus::Red,
             Focus::Green,
             Focus::Blue,
             Focus::Alpha,
             Focus::Hex,
-            Focus::TabRgb,
             Focus::TabHsv,
-            Focus::Swatches,
+            Focus::TabRgb,
             Focus::Reset,
             Focus::Dropper,
             Focus::Submit,
         ] {
-            focus = next_focus(focus, ActiveTab::Rgb, false);
+            focus = next_focus(focus, PickerTab::Color, ActiveTab::Rgb, false);
             assert_eq!(focus, expected);
         }
-        assert_eq!(next_focus(focus, ActiveTab::Rgb, false), Focus::Overlay);
+        assert_eq!(
+            next_focus(focus, PickerTab::Color, ActiveTab::Rgb, false),
+            Focus::Overlay
+        );
     }
 
     #[test]
@@ -6040,24 +6987,28 @@ mod tests {
         let mut focus = Focus::None;
         for expected in [
             Focus::Overlay,
-            Focus::Ring,
+            Focus::TopColor,
+            Focus::TopLibrary,
             Focus::Square,
+            Focus::Ring,
             Focus::HsvHue,
             Focus::HsvSat,
             Focus::HsvVal,
             Focus::Alpha,
             Focus::Hex,
-            Focus::TabRgb,
             Focus::TabHsv,
-            Focus::Swatches,
+            Focus::TabRgb,
             Focus::Reset,
             Focus::Dropper,
             Focus::Submit,
         ] {
-            focus = next_focus(focus, ActiveTab::Hsv, false);
+            focus = next_focus(focus, PickerTab::Color, ActiveTab::Hsv, false);
             assert_eq!(focus, expected);
         }
-        assert_eq!(next_focus(focus, ActiveTab::Hsv, false), Focus::Overlay);
+        assert_eq!(
+            next_focus(focus, PickerTab::Color, ActiveTab::Hsv, false),
+            Focus::Overlay
+        );
     }
 
     #[test]
@@ -6067,21 +7018,25 @@ mod tests {
             Focus::Submit,
             Focus::Dropper,
             Focus::Reset,
-            Focus::Swatches,
-            Focus::TabHsv,
             Focus::TabRgb,
+            Focus::TabHsv,
             Focus::Hex,
             Focus::Alpha,
             Focus::Blue,
             Focus::Green,
             Focus::Red,
-            Focus::Square,
             Focus::Ring,
+            Focus::Square,
+            Focus::TopLibrary,
+            Focus::TopColor,
         ] {
-            focus = previous_focus(focus, ActiveTab::Rgb, false);
+            focus = previous_focus(focus, PickerTab::Color, ActiveTab::Rgb, false);
             assert_eq!(focus, expected);
         }
-        assert_eq!(previous_focus(focus, ActiveTab::Rgb, false), Focus::Overlay);
+        assert_eq!(
+            previous_focus(focus, PickerTab::Color, ActiveTab::Rgb, false),
+            Focus::Overlay
+        );
     }
 
     #[test]
@@ -6091,44 +7046,69 @@ mod tests {
             Focus::Submit,
             Focus::Dropper,
             Focus::Reset,
-            Focus::Swatches,
-            Focus::TabHsv,
             Focus::TabRgb,
+            Focus::TabHsv,
             Focus::Hex,
             Focus::Alpha,
             Focus::HsvVal,
             Focus::HsvSat,
             Focus::HsvHue,
-            Focus::Square,
             Focus::Ring,
+            Focus::Square,
+            Focus::TopLibrary,
+            Focus::TopColor,
         ] {
-            focus = previous_focus(focus, ActiveTab::Hsv, false);
+            focus = previous_focus(focus, PickerTab::Color, ActiveTab::Hsv, false);
             assert_eq!(focus, expected);
         }
-        assert_eq!(previous_focus(focus, ActiveTab::Hsv, false), Focus::Overlay);
+        assert_eq!(
+            previous_focus(focus, PickerTab::Color, ActiveTab::Hsv, false),
+            Focus::Overlay
+        );
+    }
+
+    #[test]
+    fn focus_cycle_library() {
+        let mut focus = Focus::None;
+        for expected in [
+            Focus::Overlay,
+            Focus::TopColor,
+            Focus::TopLibrary,
+            Focus::Swatches,
+            Focus::Reset,
+            Focus::Dropper,
+            Focus::Submit,
+        ] {
+            focus = next_focus(focus, PickerTab::Library, ActiveTab::Rgb, false);
+            assert_eq!(focus, expected);
+        }
+        assert_eq!(
+            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, true),
+            Focus::NewSetName
+        );
+        assert_eq!(
+            next_focus(Focus::NewSetName, PickerTab::Library, ActiveTab::Rgb, true),
+            Focus::Reset
+        );
     }
 
     #[test]
     fn focus_cycle_naming_new_set() {
         assert_eq!(
-            next_focus(Focus::Hex, ActiveTab::Rgb, true),
+            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, true),
             Focus::NewSetName
         );
         assert_eq!(
-            next_focus(Focus::NewSetName, ActiveTab::Rgb, true),
-            Focus::TabRgb
+            next_focus(Focus::NewSetName, PickerTab::Library, ActiveTab::Rgb, true),
+            Focus::Reset
         );
         assert_eq!(
-            previous_focus(Focus::TabRgb, ActiveTab::Rgb, true),
+            previous_focus(Focus::Reset, PickerTab::Library, ActiveTab::Rgb, true),
             Focus::NewSetName
         );
         assert_eq!(
-            previous_focus(Focus::NewSetName, ActiveTab::Rgb, true),
-            Focus::Hex
-        );
-        assert_eq!(
-            next_focus(Focus::Hex, ActiveTab::Rgb, false),
-            Focus::TabRgb
+            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, false),
+            Focus::Reset
         );
     }
 
@@ -6136,11 +7116,23 @@ mod tests {
     fn focus_cycle_stray_and_unfocused() {
         // A channel of the inactive tab is normalized: it is not part of
         // the cycle.
-        assert_eq!(next_focus(Focus::Red, ActiveTab::Hsv, false), Focus::Overlay);
-        assert_eq!(previous_focus(Focus::Red, ActiveTab::Hsv, false), Focus::None);
+        assert_eq!(
+            next_focus(Focus::Red, PickerTab::Color, ActiveTab::Hsv, false),
+            Focus::Overlay
+        );
+        assert_eq!(
+            previous_focus(Focus::Red, PickerTab::Color, ActiveTab::Hsv, false),
+            Focus::None
+        );
         // Unfocused elements enter/leave the cycle at its start.
-        assert_eq!(next_focus(Focus::None, ActiveTab::Hsv, false), Focus::Overlay);
-        assert_eq!(previous_focus(Focus::None, ActiveTab::Rgb, false), Focus::None);
+        assert_eq!(
+            next_focus(Focus::None, PickerTab::Color, ActiveTab::Hsv, false),
+            Focus::Overlay
+        );
+        assert_eq!(
+            previous_focus(Focus::None, PickerTab::Color, ActiveTab::Rgb, false),
+            Focus::None
+        );
     }
 
     #[test]
