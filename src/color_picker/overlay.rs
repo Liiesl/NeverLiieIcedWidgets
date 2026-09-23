@@ -631,9 +631,15 @@ where
 
         match self.state.color_bar_dragged {
             ColorBarDragged::SatValue => {
+                // S/V-only change: keep the remembered hue instead of
+                // re-deriving it from RGB, so float truncation in the
+                // HSV->RGB->HSV round-trip cannot drift the hue (e.g.
+                // towards red) while dragging inside the square.
+                let hue = self.state.hue;
                 self.state.apply_color(Color {
                     a: self.state.color.a,
                     ..Hsv {
+                        hue,
                         saturation: cursor
                             .land()
                             .position()
@@ -644,7 +650,6 @@ where
                             .position()
                             .map(calc_percentage_value)
                             .unwrap_or(hsv_color.value),
-                        ..hsv_color
                     }
                     .into()
                 });
@@ -869,7 +874,7 @@ where
                     .land()
                     .position()
                     .map(|position| {
-                        (calc_percentage(row_bounds[0], position) * 360.0) as u16 % 360
+                        (calc_percentage(row_bounds[0], position) * 360.0).round() as u16 % 360
                     })
                     .unwrap_or(hsv.hue);
                 self.state.apply_color(Color {
@@ -885,9 +890,11 @@ where
             }
             ColorBarDragged::HsvSat => {
                 let hsv: Hsv = self.state.hsv();
+                let hue = self.state.hue;
                 self.state.apply_color(Color {
                     a: self.state.color.a,
                     ..Hsv {
+                        hue,
                         saturation: cursor
                             .land()
                             .position()
@@ -901,9 +908,11 @@ where
             }
             ColorBarDragged::HsvVal => {
                 let hsv: Hsv = self.state.hsv();
+                let hue = self.state.hue;
                 self.state.apply_color(Color {
                     a: self.state.color.a,
                     ..Hsv {
+                        hue,
                         value: cursor
                             .land()
                             .position()
@@ -1109,27 +1118,48 @@ where
 
                 match self.state.focus {
                     Focus::Square => {
-                        let hsv = self.state.hsv();
+                        let mut hsv = self.state.hsv();
+                        hsv.hue = self.state.hue;
                         status = sat_value_handle(key, &mut self.state.color, hsv);
                     }
                     Focus::Ring => {
                         let hsv = self.state.hsv();
                         status = hue_handle(key, &mut self.state.color, hsv, &mut self.state.hue);
                     }
-                    Focus::Red => status = rgba_bar_handle(key, &mut self.state.color.r),
-                    Focus::Green => status = rgba_bar_handle(key, &mut self.state.color.g),
-                    Focus::Blue => status = rgba_bar_handle(key, &mut self.state.color.b),
+                    Focus::Red => {
+                        status = rgba_bar_handle(key, &mut self.state.color.r);
+                        let hsv: Hsv = self.state.color.into();
+                        if hsv.saturation > 0.001 && hsv.value > 0.001 {
+                            self.state.hue = hsv.hue;
+                        }
+                    }
+                    Focus::Green => {
+                        status = rgba_bar_handle(key, &mut self.state.color.g);
+                        let hsv: Hsv = self.state.color.into();
+                        if hsv.saturation > 0.001 && hsv.value > 0.001 {
+                            self.state.hue = hsv.hue;
+                        }
+                    }
+                    Focus::Blue => {
+                        status = rgba_bar_handle(key, &mut self.state.color.b);
+                        let hsv: Hsv = self.state.color.into();
+                        if hsv.saturation > 0.001 && hsv.value > 0.001 {
+                            self.state.hue = hsv.hue;
+                        }
+                    }
                     Focus::Alpha => status = rgba_bar_handle(key, &mut self.state.color.a),
                     Focus::HsvHue => {
                         let hsv = self.state.hsv();
                         status = hue_handle(key, &mut self.state.color, hsv, &mut self.state.hue);
                     }
                     Focus::HsvSat => {
-                        let hsv = self.state.hsv();
+                        let mut hsv = self.state.hsv();
+                        hsv.hue = self.state.hue;
                         status = hsv_sat_handle(key, &mut self.state.color, hsv);
                     }
                     Focus::HsvVal => {
-                        let hsv = self.state.hsv();
+                        let mut hsv = self.state.hsv();
+                        hsv.hue = self.state.hue;
                         status = hsv_val_handle(key, &mut self.state.color, hsv);
                     }
                     Focus::TabRgb => {
@@ -1410,6 +1440,7 @@ where
                 }
                 5 => {
                     let mut hsv: Hsv = self.state.hsv();
+                    hsv.hue = self.state.hue;
                     hsv.saturation = f32::from(value) / 255.0;
                     self.state.apply_color(Color {
                         a: self.state.color.a,
@@ -1420,6 +1451,7 @@ where
                 }
                 _ => {
                     let mut hsv: Hsv = self.state.hsv();
+                    hsv.hue = self.state.hue;
                     hsv.value = f32::from(value) / 255.0;
                     self.state.apply_color(Color {
                         a: self.state.color.a,
@@ -5619,11 +5651,12 @@ impl State {
 
     /// Sets the current color, remembering its hue when it has one.
     ///
-    /// Achromatic colors (saturation 0) do not overwrite the remembered hue;
-    /// see [`Self::hue`].
+    /// Near-achromatic colors (tiny saturation or value) carry no reliable
+    /// hue: re-deriving it from RGB amplifies float noise and would corrupt
+    /// the remembered hue. They do not overwrite it; see [`Self::hue`].
     pub(crate) fn apply_color(&mut self, color: Color) {
         let hsv: Hsv = color.into();
-        if hsv.saturation > 0.0 {
+        if hsv.saturation > 0.001 && hsv.value > 0.001 {
             self.hue = hsv.hue;
         }
         self.color = color;
@@ -5631,11 +5664,11 @@ impl State {
 
     /// The HSV of the current color for display purposes.
     ///
-    /// Achromatic colors (saturation 0) have no hue; the last meaningful hue
+    /// Near-achromatic colors have no reliable hue; the last meaningful hue
     /// is substituted so the ring/square do not snap to red.
     pub(crate) fn hsv(&self) -> Hsv {
         let hsv: Hsv = self.color.into();
-        if hsv.saturation > 0.0 {
+        if hsv.saturation > 0.001 && hsv.value > 0.001 {
             hsv
         } else {
             Hsv {
