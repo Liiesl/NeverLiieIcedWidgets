@@ -2309,6 +2309,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "number-input-test"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "neverliie-iced-widgets",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
