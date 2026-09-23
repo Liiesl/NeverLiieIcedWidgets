@@ -18,6 +18,7 @@
 //! - [`color_picker`] — HSV/RGBA color picker with overlay (ported from iced_aw)
 //! - [`title_bar`] — Cross-platform custom title bar / window frame (ported from iced-native-frame)
 //! - [`split_button`] — Split button with a pick-list style dropdown
+//! - [`number_input`] — Horizontal numeric input `(-|input|+)` with pill corners
 //!
 //! Per-widget guides are also available in the repository's [`docs/`](https://github.com/anomalyco/NeverLiieIcedWidgets/tree/main/docs) folder.
 //!
@@ -58,5 +59,6 @@ pub mod ghost_text_input;
 pub mod lazy_icon;
 pub mod overlay;
 pub mod slider_tooltip;
+pub mod number_input;
 pub mod split_button;
 pub mod title_bar;

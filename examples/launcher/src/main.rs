@@ -44,6 +44,8 @@ impl App {
                 .on_press(Message::RunDemo("ellipsis-text-test")),
             button(text("Title Bar").width(Length::Fill))
                 .on_press(Message::RunDemo("title-bar-test")),
+            button(text("Number Input").width(Length::Fill))
+                .on_press(Message::RunDemo("number-input-test")),
         ]
         .spacing(8)
         .padding(24);

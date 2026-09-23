@@ -95,6 +95,9 @@ cargo run -p title-bar-test
 # Split button with pick-list dropdown (main executes, arrow opens menu)
 cargo run -p split-button-test
 
+# Horizontal number input pill (-|input|+) with Up/Down + wheel stepping
+cargo run -p number-input-test
+
 # Launcher menu for the demos above
 cargo run -p launcher
 ```

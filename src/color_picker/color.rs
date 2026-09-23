@@ -61,7 +61,7 @@ impl From<Color> for Hsv {
             60.0 * (4.0 + (color.r - color.g) / (max - min))
         };
 
-        let hue = if hue < 0.0 { hue + 360.0 } else { hue } as u16 % 360;
+        let hue = hue.rem_euclid(360.0).round() as u16 % 360;
 
         let saturation = if max == 0.0 { 0.0 } else { (max - min) / max };
 
@@ -101,11 +101,11 @@ impl From<Hsv> for Color {
 
 /// Normalizes an angle in degrees to `0..360`.
 ///
-/// Mirrors the Python reference: `int(angle_deg + 360) % 360` (truncation
-/// toward zero, wrap-around).
+/// Rounds to the nearest degree so repeated conversions do not drift
+/// downward (truncation would turn `29.9999` into `29` on every pass).
 #[must_use]
 pub fn hue_from_angle(angle_deg: f32) -> u16 {
-    ((angle_deg + 360.0) as i32).rem_euclid(360) as u16
+    angle_deg.rem_euclid(360.0).round() as u16 % 360
 }
 
 /// Parses hex color digits into `(r, g, b, a)` bytes.
