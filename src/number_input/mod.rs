@@ -118,6 +118,7 @@ pub struct NumberInput<
     border_radius: Option<border::Radius>,
     button_width: Option<f32>,
     prefix_width: Option<f32>,
+    enabled: bool,
     class: <Theme as Catalog>::Class<'a>,
     button_style:
         Option<Rc<dyn Fn(&Theme, button::Status) -> button::Style + 'a>>,
@@ -186,6 +187,7 @@ where
             border_radius: None,
             button_width: None,
             prefix_width: None,
+            enabled: true,
             class: <Theme as Catalog>::default(),
             button_style: None,
             input_style: None,
@@ -337,6 +339,20 @@ where
     #[must_use]
     pub fn prefix_width(mut self, width: f32) -> Self {
         self.prefix_width = Some(width);
+        self
+    }
+
+    /// Enables or disables the whole input. When disabled the `-`/`+`
+    /// buttons emit nothing, the inner text field is read-only (no
+    /// `on_input`), and wheel / arrow-key stepping is ignored.
+    #[must_use]
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self.rebuild_input(
+            &canonical_of(self.value),
+            self.resolved_text_size_estimated(),
+        );
+        self.rebuild_buttons_estimated();
         self
     }
 
@@ -524,7 +540,7 @@ where
         outer: f32,
     ) -> Element<'a, Message, Theme, Renderer> {
         let next = self.stepped(!increment, false);
-        let enabled = next != self.value;
+        let enabled = self.enabled && next != self.value;
         let glyph = if increment { "+" } else { "-" };
         let mut btn = button(
             text_widget(glyph)
@@ -594,8 +610,12 @@ where
         let on_change = Rc::clone(&self.on_change);
         let current = self.value;
         let range = self.range.clone();
-        let mut field = text_input(&self.placeholder, display)
-            .on_input(move |s: String| {
+        let enabled = self.enabled;
+        let on_input = enabled.then(|| {
+            let stash = Rc::clone(&stash);
+            let on_change = Rc::clone(&on_change);
+            let range = range.clone();
+            move |s: String| {
                 *stash.borrow_mut() = Some(s.clone());
                 if is_intermediate_text::<T>(&s) {
                     on_change(current)
@@ -605,7 +625,10 @@ where
                         Err(_) => on_change(current),
                     }
                 }
-            })
+            }
+        });
+        let mut field = text_input(&self.placeholder, display)
+            .on_input_maybe(on_input)
             .width(Length::Fill)
             .padding(self.input_padding)
             .size(text_size);
@@ -711,7 +734,7 @@ fn button_width_for(
     text_size: Pixels,
 ) -> f32 {
     override_width
-        .unwrap_or_else(|| (text_size.0 + padding.x()).max(30.0))
+        .unwrap_or_else(|| (text_size.0 + padding.x()).max(26.0))
 }
 
 fn split_zones(
@@ -1020,7 +1043,7 @@ where
                 + text_w
                 + self.input_padding.x()
                 + 32.0)
-                .max(120.0),
+                .max(100.0),
             text_size.0 + self.input_padding.y() + 14.0,
         );
         let size = limits
@@ -1279,7 +1302,7 @@ where
                 }
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if hovered {
+                if self.enabled && hovered {
                     let y = match delta {
                         mouse::ScrollDelta::Lines { y, .. } => *y,
                         mouse::ScrollDelta::Pixels { y, .. } => *y,
@@ -1329,7 +1352,7 @@ where
                     _ => None,
                 };
                 if let Some(down) = arrow {
-                    if focused || hovered {
+                    if self.enabled && (focused || hovered) {
                         let large = modifiers.shift();
                         let next = self.stepped(down, large);
                         if next != self.value {
@@ -1474,6 +1497,17 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        // Disabled pills show the 🚫 cursor on hover, like the app's
+        // `with_disabled_cursor` wrapper (and `toggler`'s built-in
+        // disabled behavior). The inner children are all inert when
+        // disabled (buttons without `on_press`, field without
+        // `on_input`), so they only ever report `Idle` here.
+        if !self.enabled {
+            if cursor.is_over(layout.bounds()) {
+                return mouse::Interaction::NotAllowed;
+            }
+            return mouse::Interaction::default();
+        }
         self.children
             .iter()
             .zip(&tree.children)

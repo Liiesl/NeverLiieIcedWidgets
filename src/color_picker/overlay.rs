@@ -4013,7 +4013,14 @@ where
             && self.state.dropper_mode == DropperMode::Picking
             && let Some(frame) = &self.state.dropper_frame
         {
-            let clamp_bounds = if self.viewport.width > 0.0 && self.viewport.height > 0.0 {
+            // Prefer the persisted full-window viewport: the draw pass
+            // rebuilds this overlay fresh without a layout call, so `self.viewport`
+            // is still the ancestor-clipped construction-time rect there.
+            let clamp_bounds = if self.state.window_viewport.width > 0.0
+                && self.state.window_viewport.height > 0.0
+            {
+                self.state.window_viewport
+            } else if self.viewport.width > 0.0 && self.viewport.height > 0.0 {
                 self.viewport
             } else {
                 bounds
@@ -4274,6 +4281,14 @@ where
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
         let viewport = Rectangle::with_size(bounds);
+        // Overlay layout bounds are the full window; the construction-time
+        // viewport from HexColorInput/FloatingColorPicker is clipped to the
+        // ancestor scrollable/pane. Sync here so drag/lens/hit-test clamp to
+        // the window and the picker moves freely in the viewport. The draw
+        // pass rebuilds without layout, so persist it in the state as well
+        // for the magnifier lens to read there.
+        self.content.viewport = viewport;
+        self.content.state.window_viewport = viewport;
 
         // Dialog content below the header strip.
         let available = Size::new(
@@ -7620,6 +7635,12 @@ pub struct State {
     /// The last hovered point during picking (window coordinates, logical
     /// pixels).
     pub(crate) dropper_cursor: Point,
+    /// The full-window viewport captured during [`ColorPickerWindow`] layout.
+    /// The draw pass rebuilds the overlay fresh without a layout call, so the
+    /// construction-time `viewport` is still clipped to the ancestor
+    /// scrollable/pane; this persisted copy lets the magnifier lens clamp to
+    /// the window and move freely in the viewport.
+    pub(crate) window_viewport: Rectangle,
 }
 
 impl State {
@@ -7868,6 +7889,7 @@ impl Default for State {
             dropper_mode: DropperMode::Idle,
             dropper_frame: None,
             dropper_cursor: Point::ORIGIN,
+            window_viewport: Rectangle::default(),
             hex_input: color_to_hex_argb(default_color),
             value_inputs: value_inputs_from_color(default_color),
         }
