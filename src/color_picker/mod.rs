@@ -78,6 +78,7 @@ pub mod style_state;
 
 pub use dropper::DropperBuffer;
 pub use gradient::{Gradient, GradientStop, PickedValue};
+pub use self::overlay::{SwatchSet, MAX_RECENT, MAX_SWATCHES_PER_SET};
 
 use self::dropper::DropperMode;
 use self::overlay::{
@@ -169,6 +170,14 @@ where
     /// Optional function producing the message published when the user
     /// activates the eye dropper and a fresh capture is needed.
     on_dropper_capture: Option<Box<dyn Fn() -> Message>>,
+    /// Persisted swatch sets to seed/restore the Library tab (`None` =
+    /// widget owns them after first creation).
+    swatches: Option<Vec<SwatchSet>>,
+    /// Persisted recent colors to seed/restore the Library tab (`None` =
+    /// widget owns them after first creation).
+    recent_colors: Option<Vec<PickedValue>>,
+    /// Persisted active swatch tab index (`None` = keep internal).
+    active_swatch_tab: Option<usize>,
     /// The style of the dialog.
     class: <Theme as style::Catalog>::Class<'a>,
     /// Tree state holder for the dialog's buttons.
@@ -257,6 +266,9 @@ where
             on_pick_submit: None,
             dropper_buffer: None,
             on_dropper_capture: None,
+            swatches: None,
+            recent_colors: None,
+            active_swatch_tab: None,
             class: <Theme as style::Catalog>::default(),
             content_state: ColorPickerOverlayButtons::default().into(),
         }
@@ -351,6 +363,35 @@ where
         self
     }
 
+    /// Seeds/restores the Library swatch sets (e.g. loaded from disk).
+    ///
+    /// The value is applied at state creation and whenever it changes
+    /// between frames (echoed values are ignored, mirroring `color`).
+    /// While `None` (default) the widget owns the sets internally; read them
+    /// back via [`State::swatches`] for persistence.
+    #[must_use]
+    pub fn swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.swatches = Some(swatches);
+        self
+    }
+
+    /// Seeds/restores the Library recent colors (e.g. loaded from disk).
+    ///
+    /// Truncated to [`MAX_RECENT`]. See [`Self::swatches`] for ownership.
+    /// Read back via [`State::recent_colors`] for persistence.
+    #[must_use]
+    pub fn recent_colors(mut self, recent_colors: Vec<PickedValue>) -> Self {
+        self.recent_colors = Some(recent_colors);
+        self
+    }
+
+    /// Restores the active swatch tab index (`None` = keep internal).
+    #[must_use]
+    pub fn active_swatch_tab(mut self, index: usize) -> Self {
+        self.active_swatch_tab = Some(index);
+        self
+    }
+
     /// Sets the style of the [`ColorPicker`].
     #[must_use]
     pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self
@@ -393,6 +434,12 @@ pub struct State {
     pub(crate) old_color: Color,
     /// The `gradient` seen during the previous render (`None` = solid).
     pub(crate) old_gradient: Option<Gradient>,
+    /// The `swatches` builder value seen during the previous render.
+    pub(crate) old_swatches: Option<Vec<SwatchSet>>,
+    /// The `recent_colors` builder value seen during the previous render.
+    pub(crate) old_recents: Option<Vec<PickedValue>>,
+    /// The `active_swatch_tab` builder value seen during the previous render.
+    pub(crate) old_active_tab: Option<usize>,
 }
 
 impl std::fmt::Debug for State {
@@ -413,6 +460,9 @@ impl State {
             content_tree: std::ptr::null_mut(),
             old_color: color,
             old_gradient: None,
+            old_swatches: None,
+            old_recents: None,
+            old_active_tab: None,
         }
     }
 
@@ -427,7 +477,65 @@ impl State {
             content_tree: std::ptr::null_mut(),
             old_color: color,
             old_gradient: Some(gradient),
+            old_swatches: None,
+            old_recents: None,
+            old_active_tab: None,
         }
+    }
+
+    /// Creates a new [`State`] with persisted swatch sets (e.g. loaded from disk).
+    #[must_use]
+    pub fn with_swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.overlay_state.get_mut().set_swatches(swatches.clone());
+        self.old_swatches = Some(swatches);
+        self
+    }
+
+    /// Creates a new [`State`] with persisted recent colors.
+    #[must_use]
+    pub fn with_recent_colors(mut self, recents: Vec<PickedValue>) -> Self {
+        self.overlay_state.get_mut().set_recent_colors(recents.clone());
+        self.old_recents = Some(recents);
+        self
+    }
+
+    /// Returns the swatch sets for persistence (clone and save to disk).
+    #[must_use]
+    pub fn swatches(&self) -> &[SwatchSet] {
+        // SAFETY: read-only access; iced never overlaps widget phases.
+        unsafe { &*self.overlay_state.get() }.swatches()
+    }
+
+    /// Replaces the swatch sets with persisted values.
+    pub fn set_swatches(&mut self, swatches: Vec<SwatchSet>) {
+        self.overlay_state.get_mut().set_swatches(swatches.clone());
+        self.old_swatches = Some(swatches);
+    }
+
+    /// Returns the recent colors for persistence.
+    #[must_use]
+    pub fn recent_colors(&self) -> &[PickedValue] {
+        // SAFETY: read-only access; see `swatches`.
+        unsafe { &*self.overlay_state.get() }.recent_colors()
+    }
+
+    /// Replaces the recent colors with persisted values.
+    pub fn set_recent_colors(&mut self, recents: Vec<PickedValue>) {
+        self.overlay_state.get_mut().set_recent_colors(recents.clone());
+        self.old_recents = Some(recents);
+    }
+
+    /// Returns the active swatch tab index.
+    #[must_use]
+    pub fn active_swatch_tab(&self) -> usize {
+        // SAFETY: read-only access; see `swatches`.
+        unsafe { &*self.overlay_state.get() }.active_swatch_tab()
+    }
+
+    /// Selects the active swatch set.
+    pub fn set_active_swatch_tab(&mut self, index: usize) {
+        self.overlay_state.get_mut().set_active_swatch_tab(index);
+        self.old_active_tab = Some(self.active_swatch_tab());
     }
 
     /// Resets the color and gradient of the state.
@@ -448,7 +556,14 @@ impl State {
     /// color or gradient: values differing from both the previous argument
     /// (so echoed live updates are ignored) and the current internal
     /// selection re-snapshot Original.
-    fn synchronize(&mut self, color: Color, gradient: Option<&Gradient>) {
+    fn synchronize(
+        &mut self,
+        color: Color,
+        gradient: Option<&Gradient>,
+        swatches: Option<&Vec<SwatchSet>>,
+        recents: Option<&Vec<PickedValue>>,
+        active_tab: Option<usize>,
+    ) {
         let overlay_state = self.overlay_state.get_mut();
         if color != self.old_color && color != overlay_state.color {
             overlay_state.force_synchronize(color);
@@ -465,6 +580,45 @@ impl State {
             }
             None => {
                 self.old_gradient = None;
+            }
+        }
+        match swatches {
+            Some(swatches) => {
+                if self.old_swatches.as_ref() != Some(swatches)
+                    && overlay_state.swatches() != swatches.as_slice()
+                {
+                    overlay_state.set_swatches(swatches.clone());
+                }
+                self.old_swatches = Some(swatches.clone());
+            }
+            None => {
+                self.old_swatches = None;
+            }
+        }
+        match recents {
+            Some(recents) => {
+                if self.old_recents.as_ref() != Some(recents)
+                    && overlay_state.recent_colors() != recents.as_slice()
+                {
+                    overlay_state.set_recent_colors(recents.clone());
+                }
+                self.old_recents = Some(recents.clone());
+            }
+            None => {
+                self.old_recents = None;
+            }
+        }
+        match active_tab {
+            Some(index) => {
+                if self.old_active_tab != Some(index)
+                    && overlay_state.active_swatch_tab() != index
+                {
+                    overlay_state.set_active_swatch_tab(index);
+                }
+                self.old_active_tab = Some(index);
+            }
+            None => {
+                self.old_active_tab = None;
             }
         }
     }
@@ -486,10 +640,20 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(match &self.gradient {
+        let mut state = match &self.gradient {
             Some(gradient) => State::with_gradient(self.color, gradient.clone()),
             None => State::new(self.color),
-        })
+        };
+        if let Some(swatches) = &self.swatches {
+            state.set_swatches(swatches.clone());
+        }
+        if let Some(recents) = &self.recent_colors {
+            state.set_recent_colors(recents.clone());
+        }
+        if let Some(index) = self.active_swatch_tab {
+            state.set_active_swatch_tab(index);
+        }
+        tree::State::new(state)
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -499,7 +663,13 @@ where
     fn diff(&self, tree: &mut Tree) {
         let picker_state = tree.state.downcast_mut::<State>();
 
-        picker_state.synchronize(self.color, self.gradient.as_ref());
+        picker_state.synchronize(
+            self.color,
+            self.gradient.as_ref(),
+            self.swatches.as_ref(),
+            self.recent_colors.as_ref(),
+            self.active_swatch_tab,
+        );
 
         tree.diff_children(std::slice::from_ref(&self.content_state));
     }
@@ -797,6 +967,13 @@ where
     /// Optional function producing the message published when the user
     /// activates the eye dropper and a fresh capture is needed.
     on_dropper_capture: Option<Box<dyn Fn() -> Message>>,
+    /// Persisted swatch sets to seed/restore the Library tab (`None` =
+    /// widget owns them after first creation).
+    swatches: Option<Vec<SwatchSet>>,
+    /// Persisted recent colors to seed/restore the Library tab.
+    recent_colors: Option<Vec<PickedValue>>,
+    /// Persisted active swatch tab index.
+    active_swatch_tab: Option<usize>,
     /// The style of the dialog.
     class: <Theme as style::Catalog>::Class<'a>,
     /// The initial position of the dialog window; dragging overrides it.
@@ -853,6 +1030,9 @@ where
             on_pick_submit: None,
             dropper_buffer: None,
             on_dropper_capture: None,
+            swatches: None,
+            recent_colors: None,
+            active_swatch_tab: None,
             class: <Theme as style::Catalog>::default(),
             position: None,
             overlay_state: ColorPickerOverlayButtons::default().into(),
@@ -948,6 +1128,30 @@ where
         self
     }
 
+    /// Seeds/restores the Library swatch sets (e.g. loaded from disk).
+    ///
+    /// Applied at state creation and on reopen; read back via
+    /// [`FloatingState::swatches`] for persistence.
+    #[must_use]
+    pub fn swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.swatches = Some(swatches);
+        self
+    }
+
+    /// Seeds/restores the Library recent colors (truncated to [`MAX_RECENT`]).
+    #[must_use]
+    pub fn recent_colors(mut self, recent_colors: Vec<PickedValue>) -> Self {
+        self.recent_colors = Some(recent_colors);
+        self
+    }
+
+    /// Restores the active swatch tab index.
+    #[must_use]
+    pub fn active_swatch_tab(mut self, index: usize) -> Self {
+        self.active_swatch_tab = Some(index);
+        self
+    }
+
     /// Sets the initial position of the dialog window.
     ///
     /// Uses the same [`Position`] strategies as the overlay widget. The user
@@ -1016,6 +1220,53 @@ impl FloatingState {    /// Creates a new [`FloatingState`].
         }
     }
 
+    /// Creates a new [`FloatingState`] with persisted swatch sets.
+    #[must_use]
+    pub fn with_swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.overlay_state.set_swatches(swatches);
+        self
+    }
+
+    /// Creates a new [`FloatingState`] with persisted recent colors.
+    #[must_use]
+    pub fn with_recent_colors(mut self, recents: Vec<PickedValue>) -> Self {
+        self.overlay_state.set_recent_colors(recents);
+        self
+    }
+
+    /// Returns the swatch sets for persistence (clone and save to disk).
+    #[must_use]
+    pub fn swatches(&self) -> &[SwatchSet] {
+        self.overlay_state.swatches()
+    }
+
+    /// Replaces the swatch sets with persisted values.
+    pub fn set_swatches(&mut self, swatches: Vec<SwatchSet>) {
+        self.overlay_state.set_swatches(swatches);
+    }
+
+    /// Returns the recent colors for persistence.
+    #[must_use]
+    pub fn recent_colors(&self) -> &[PickedValue] {
+        self.overlay_state.recent_colors()
+    }
+
+    /// Replaces the recent colors with persisted values.
+    pub fn set_recent_colors(&mut self, recents: Vec<PickedValue>) {
+        self.overlay_state.set_recent_colors(recents);
+    }
+
+    /// Returns the active swatch tab index.
+    #[must_use]
+    pub fn active_swatch_tab(&self) -> usize {
+        self.overlay_state.active_swatch_tab()
+    }
+
+    /// Selects the active swatch set.
+    pub fn set_active_swatch_tab(&mut self, index: usize) {
+        self.overlay_state.set_active_swatch_tab(index);
+    }
+
     /// Resets the color and gradient of the state.
     pub fn reset(&mut self) {
         let default = Color::from_rgb(0.5, 0.25, 0.25);
@@ -1035,16 +1286,46 @@ impl FloatingState {    /// Creates a new [`FloatingState`].
     /// the value: the initial color must stay frozen at the open-time color
     /// so the Original preview panel does not track live `on_color_change`
     /// updates. When it is reopened, reset the color to the provided one.
+    /// Persisted library values (`swatches`/`recents`/`active_tab`) are
+    /// applied on reopen and whenever the builder value changes.
     fn synchronize(
         &mut self,
         show_picker: bool,
         color: Color,
         gradient: Option<&Gradient>,
+        swatches: Option<&Vec<SwatchSet>>,
+        recents: Option<&Vec<PickedValue>>,
+        active_tab: Option<usize>,
     ) {
         if show_picker && !self.old_show_picker {
             self.overlay_state.force_synchronize(color);
             if let Some(gradient) = gradient {
                 self.overlay_state.force_synchronize_gradient(gradient.clone());
+            }
+            if let Some(swatches) = swatches {
+                self.overlay_state.set_swatches(swatches.clone());
+            }
+            if let Some(recents) = recents {
+                self.overlay_state.set_recent_colors(recents.clone());
+            }
+            if let Some(index) = active_tab {
+                self.overlay_state.set_active_swatch_tab(index);
+            }
+        } else if show_picker {
+            if let Some(swatches) = swatches
+                && self.overlay_state.swatches() != swatches.as_slice()
+            {
+                self.overlay_state.set_swatches(swatches.clone());
+            }
+            if let Some(recents) = recents
+                && self.overlay_state.recent_colors() != recents.as_slice()
+            {
+                self.overlay_state.set_recent_colors(recents.clone());
+            }
+            if let Some(index) = active_tab
+                && self.overlay_state.active_swatch_tab() != index
+            {
+                self.overlay_state.set_active_swatch_tab(index);
             }
         }
         self.old_show_picker = show_picker;
@@ -1067,10 +1348,20 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(match &self.gradient {
+        let mut state = match &self.gradient {
             Some(gradient) => FloatingState::with_gradient(self.color, gradient.clone()),
             None => FloatingState::new(self.color),
-        })
+        };
+        if let Some(swatches) = &self.swatches {
+            state.set_swatches(swatches.clone());
+        }
+        if let Some(recents) = &self.recent_colors {
+            state.set_recent_colors(recents.clone());
+        }
+        if let Some(index) = self.active_swatch_tab {
+            state.set_active_swatch_tab(index);
+        }
+        tree::State::new(state)
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -1080,7 +1371,14 @@ where
     fn diff(&self, tree: &mut Tree) {
         let picker_state = tree.state.downcast_mut::<FloatingState>();
 
-        picker_state.synchronize(self.show_picker, self.color, self.gradient.as_ref());
+        picker_state.synchronize(
+            self.show_picker,
+            self.color,
+            self.gradient.as_ref(),
+            self.swatches.as_ref(),
+            self.recent_colors.as_ref(),
+            self.active_swatch_tab,
+        );
 
         tree.diff_children(&[&self.underlay, &self.overlay_state]);
     }
@@ -1445,12 +1743,12 @@ mod tests {
         // back through the `color` argument. That echo must not clobber the
         // internal selection.
         state.overlay_state.get_mut().apply_color(live_color);
-        state.synchronize(live_color, None);
+        state.synchronize(live_color, None, None, None, None);
         assert_eq!(state.overlay_state.get_mut().color, live_color);
 
         // A genuinely different external color re-seeds the dialog.
         let reset_color = Color::from_rgb(0.0, 1.0, 0.0);
-        state.synchronize(reset_color, None);
+        state.synchronize(reset_color, None, None, None, None);
         assert_eq!(state.overlay_state.get_mut().color, reset_color);
     }
 
@@ -1463,7 +1761,7 @@ mod tests {
         // keeps arriving every frame and must not freeze the dialog.
         let edited = Color::from_rgb(0.2, 0.2, 0.8);
         state.overlay_state.get_mut().apply_color(edited);
-        state.synchronize(open_color, None);
+        state.synchronize(open_color, None, None, None, None);
         assert_eq!(state.overlay_state.get_mut().color, edited);
     }
 
@@ -1473,20 +1771,68 @@ mod tests {
         let live_color = Color::from_rgb(1.0, 0.0, 0.0);
         let mut state = FloatingState::new(open_color);
 
-        state.synchronize(true, open_color, None);
+        state.synchronize(true, open_color, None, None, None, None);
         assert_eq!(state.overlay_state.color, open_color);
         assert_eq!(state.overlay_state.initial_color, open_color);
 
         // Live `on_color_change` re-renders must not clobber the initial
         // color while the picker is open.
-        state.synchronize(true, live_color, None);
+        state.synchronize(true, live_color, None, None, None, None);
         assert_eq!(state.overlay_state.color, open_color);
         assert_eq!(state.overlay_state.initial_color, open_color);
 
         // Reopening with a different color resets both.
-        state.synchronize(false, open_color, None);
-        state.synchronize(true, live_color, None);
+        state.synchronize(false, open_color, None, None, None, None);
+        state.synchronize(true, live_color, None, None, None, None);
         assert_eq!(state.overlay_state.color, live_color);
         assert_eq!(state.overlay_state.initial_color, live_color);
+    }
+
+    #[test]
+    fn inline_state_library_persistence_round_trip() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+        let mut state = State::new(color)
+            .with_swatches(vec![SwatchSet::with_colors(
+                "Mine",
+                vec![PickedValue::Solid(Color::BLACK)],
+            )])
+            .with_recent_colors(vec![PickedValue::Solid(Color::WHITE)]);
+
+        assert_eq!(state.swatches().len(), 1);
+        assert_eq!(state.swatches()[0].name(), "Mine");
+        assert_eq!(state.recent_colors().len(), 1);
+
+        state.set_active_swatch_tab(0);
+        assert_eq!(state.active_swatch_tab(), 0);
+
+        // Empty restore falls back to the default set.
+        state.set_swatches(Vec::new());
+        assert_eq!(state.swatches().len(), 1);
+    }
+
+    #[test]
+    fn inline_synchronize_applies_library_builder_values() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+        let mut state = State::new(color);
+        let swatches = vec![SwatchSet::new("Persisted")];
+        let recents = vec![PickedValue::Solid(Color::BLACK)];
+
+        state.synchronize(color, None, Some(&swatches), Some(&recents), Some(0));
+        assert_eq!(state.swatches()[0].name(), "Persisted");
+        assert_eq!(state.recent_colors().len(), 1);
+    }
+
+    #[test]
+    fn floating_state_library_persistence_round_trip() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+        let mut state = FloatingState::new(color)
+            .with_swatches(vec![SwatchSet::new("Mine")])
+            .with_recent_colors(vec![PickedValue::Solid(Color::WHITE)]);
+
+        assert_eq!(state.swatches()[0].name(), "Mine");
+        assert_eq!(state.recent_colors().len(), 1);
+
+        state.set_swatches(vec![SwatchSet::new("Other")]);
+        assert_eq!(state.swatches()[0].name(), "Other");
     }
 }

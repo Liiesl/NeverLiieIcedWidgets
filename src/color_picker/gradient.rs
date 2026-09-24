@@ -10,6 +10,7 @@ pub const MIN_STOP_GAP: f32 = 0.02;
 
 /// A single gradient stop: a color at a position along the bar.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientStop {
     /// Position along the bar in `0..=1`.
     pub offset: f32,
@@ -34,6 +35,7 @@ impl GradientStop {
 /// recent colors and submit/change callbacks share one code path: a solid
 /// is just a gradient with two identical stops.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PickedValue {
     /// A solid color.
     Solid(Color),
@@ -108,6 +110,7 @@ impl From<Gradient> for PickedValue {
 
 /// A two-stop linear gradient.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
     /// The stops, always length 2 and sorted by offset.
     pub stops: Vec<GradientStop>,

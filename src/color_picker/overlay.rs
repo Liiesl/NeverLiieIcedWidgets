@@ -116,9 +116,9 @@ const PREVIEW_HEIGHT: f32 = 44.0;
 #[allow(dead_code)]
 const RIGHT_PANE_WIDTH: f32 = 230.0;
 /// The maximum number of recent colors.
-const MAX_RECENT: usize = 12;
+pub const MAX_RECENT: usize = 12;
 /// The maximum number of swatches per set.
-const MAX_SWATCHES_PER_SET: usize = 24;
+pub const MAX_SWATCHES_PER_SET: usize = 24;
 
 /// Half-extent of the eye dropper magnifier source window: the lens samples
 /// a `(2 * LENS_SRC_RADIUS + 1)²` pixel neighborhood around the hovered
@@ -171,12 +171,52 @@ pub enum GradientEditorTab {
 }
 
 /// A named swatch set of the swatch tab bar.
-#[derive(Debug, Clone)]
+///
+/// The app caller can persist these (e.g. to disk) via
+/// [`State::swatches`]/[`State::set_swatches`] and restore them with
+/// [`State::with_swatches`] or the `swatches` builder on the picker widgets.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SwatchSet {
     /// The display name of the set.
     pub name: String,
     /// The picked values (solids or gradients) in the set.
     pub colors: Vec<PickedValue>,
+}
+
+impl SwatchSet {
+    /// Creates an empty swatch set with the given name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            colors: Vec::new(),
+        }
+    }
+
+    /// Creates a swatch set with the given name and colors.
+    ///
+    /// Colors are truncated to [`MAX_SWATCHES_PER_SET`] to match the
+    /// in-widget limits.
+    #[must_use]
+    pub fn with_colors(name: impl Into<String>, colors: Vec<PickedValue>) -> Self {
+        let mut set = Self::new(name);
+        set.colors = colors;
+        set.colors.truncate(MAX_SWATCHES_PER_SET);
+        set
+    }
+
+    /// Returns the display name of the set.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the picked values in the set.
+    #[must_use]
+    pub fn colors(&self) -> &[PickedValue] {
+        &self.colors
+    }
 }
 
 /// Hit-test results of the swatch section, recomputed per frame.
@@ -7687,6 +7727,82 @@ impl State {
         state.initial_is_gradient = true;
         state.selected_stop = 0;
         state
+    }
+
+    /// Creates a new State with persisted swatch sets.
+    ///
+    /// Empty input falls back to the default set; each set is truncated to
+    /// [`MAX_SWATCHES_PER_SET`].
+    #[must_use]
+    pub fn with_swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.set_swatches(swatches);
+        self
+    }
+
+    /// Creates a new State with persisted recent colors.
+    ///
+    /// Input is truncated to [`MAX_RECENT`].
+    #[must_use]
+    pub fn with_recent_colors(mut self, recents: Vec<PickedValue>) -> Self {
+        self.set_recent_colors(recents);
+        self
+    }
+
+    /// Returns the swatch sets shown in the Library tab.
+    ///
+    /// The app caller can clone this to persist it (e.g. to disk) and
+    /// restore it later with [`Self::set_swatches`] or [`Self::with_swatches`].
+    #[must_use]
+    pub fn swatches(&self) -> &[SwatchSet] {
+        &self.swatch_sets
+    }
+
+    /// Replaces the swatch sets (e.g. with values loaded from disk).
+    ///
+    /// An empty input restores the single `"Default"` set; each set is
+    /// truncated to [`MAX_SWATCHES_PER_SET`] and the active tab is clamped.
+    pub fn set_swatches(&mut self, mut swatches: Vec<SwatchSet>) {
+        if swatches.is_empty() {
+            swatches = vec![SwatchSet::new("Default")];
+        }
+        for set in &mut swatches {
+            set.colors.truncate(MAX_SWATCHES_PER_SET);
+        }
+        self.swatch_sets = swatches;
+        self.active_swatch_tab = self.active_swatch_tab.min(self.swatch_sets.len() - 1);
+        self.swatch_scroll_x = 0.0;
+        self.focused_swatch = None;
+    }
+
+    /// Returns the recently submitted picked values (up to [`MAX_RECENT`]).
+    ///
+    /// The app caller can clone this to persist it and restore it later
+    /// with [`Self::set_recent_colors`] or [`Self::with_recent_colors`].
+    #[must_use]
+    pub fn recent_colors(&self) -> &[PickedValue] {
+        &self.recent_colors
+    }
+
+    /// Replaces the recent colors (e.g. with values loaded from disk).
+    ///
+    /// Input is truncated to [`MAX_RECENT`].
+    pub fn set_recent_colors(&mut self, mut recents: Vec<PickedValue>) {
+        recents.truncate(MAX_RECENT);
+        self.recent_colors = recents;
+        self.recent_scroll_x = 0.0;
+    }
+
+    /// Returns the active swatch set index.
+    #[must_use]
+    pub fn active_swatch_tab(&self) -> usize {
+        self.active_swatch_tab
+    }
+
+    /// Selects the active swatch set, clamping out-of-range indices.
+    pub fn set_active_swatch_tab(&mut self, index: usize) {
+        if !self.swatch_sets.is_empty() {
+            self.active_swatch_tab = index.min(self.swatch_sets.len() - 1);
+        }
     }
 
     /// Reset cached canvas when internal state is modified.

@@ -5,9 +5,15 @@ edition = "2024"
 
 [dependencies]
 iced = { path = "iced", features = ["default", "advanced", "image", "svg", "canvas"] }
+iced_core = { path = "iced/core", version = "0.14.0", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 bytes = "1.6"
 num-traits = "0.2"
 unicode-segmentation = "1.11"
+
+[features]
+default = []
+serde = ["dep:serde", "dep:iced_core", "iced_core/serde"]
 
 # Native dependency of the `title_bar` widget. Used exclusively for the
 # `WM_NCHITTEST` subclass that gives the custom title bar its Windows 11
