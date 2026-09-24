@@ -72,13 +72,18 @@ const OVERLAY_BUTTONS: usize = 6;
 const PILL_COUNT: usize = 6;
 
 const SWATCH_W: f32 = 30.0;
-const HEX_W: f32 = 74.0;
-const ALPHA_W: f32 = 44.0;
-const SUFFIX_W: f32 = 16.0;
+const HEX_W: f32 = 68.0;
+const ALPHA_W: f32 = 36.0;
+const SUFFIX_W: f32 = 12.0;
 const ICON_W: f32 = 20.0;
 const ANGLE_W: f32 = 50.0;
-const GAP: f32 = 6.0;
+const GAP: f32 = 4.0;
 const PAD_X: f32 = 6.0;
+/// Minimum hex field width when squeezed below intrinsic: keeps the `%`
+/// suffix inside the pill in narrow `FillPortion` columns.
+const HEX_MIN_W: f32 = 48.0;
+/// Minimum alpha field width when squeezed below intrinsic.
+const ALPHA_MIN_W: f32 = 28.0;
 
 const DEFAULT_RADIUS: f32 = 8.0;
 const FALLBACK_TEXT_SIZE: f32 = 13.0;
@@ -466,6 +471,14 @@ where
     #[must_use]
     pub fn text_size(mut self, size: impl Into<Pixels>) -> Self {
         self.text_size = Some(size.into());
+        self
+    }
+
+    /// Sets the padding of the inner hex/alpha/angle fields, so the pill
+    /// height (`text + padding + frame`) can match `NumberInput`.
+    #[must_use]
+    pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
+        self.input_padding = padding.into();
         self
     }
 
@@ -1037,7 +1050,7 @@ where
         self.rebuild_pill(&hex_disp, &alpha_disp, &angle_disp);
 
         let (sw, hw, aw, suf_w, icon_w, ang_w) = self.pill_widths();
-        let widths = [sw, hw, aw, suf_w, icon_w, ang_w];
+        let mut widths = [sw, hw, aw, suf_w, icon_w, ang_w];
         let visible: Vec<f32> =
             widths.iter().copied().filter(|w| *w > 0.0).collect();
         let gaps = GAP * visible.len().saturating_sub(1) as f32;
@@ -1049,6 +1062,23 @@ where
         let size = limits
             .width(self.width)
             .resolve(self.width, Length::Shrink, intrinsic);
+        // Flex the hex field so Fill pills keep the `%` suffix inside
+        // (extra goes to hex; squeeze shrinks hex, then alpha).
+        if widths[HEX] > 0.0 {
+            let mut extra = size.width - intrinsic.width;
+            if extra > 0.0 {
+                widths[HEX] += extra;
+            } else if extra < 0.0 {
+                let take_hex = (-extra).min((widths[HEX] - HEX_MIN_W).max(0.0));
+                widths[HEX] -= take_hex;
+                extra += take_hex;
+                if extra < 0.0 && widths[ALPHA] > 0.0 {
+                    let take_alpha =
+                        (-extra).min((widths[ALPHA] - ALPHA_MIN_W).max(0.0));
+                    widths[ALPHA] -= take_alpha;
+                }
+            }
+        }
 
         let mut nodes = Vec::with_capacity(PILL_COUNT);
         let mut x = PAD_X;
@@ -1194,6 +1224,13 @@ where
                         shell.capture_event();
                         shell.invalidate_layout();
                         shell.request_redraw();
+                        return;
+                    }
+                    // At min/max `stepped_*` returns None (no value change).
+                    // Still capture so the outer styling-panel scrollable
+                    // does not scroll while the cursor is over a stepper.
+                    if alpha_hit || angle_hit {
+                        shell.capture_event();
                         return;
                     }
                 }
