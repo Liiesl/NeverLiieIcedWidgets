@@ -19,6 +19,7 @@
 //! - [`title_bar`] — Cross-platform custom title bar / window frame (ported from iced-native-frame)
 //! - [`split_button`] — Split button with a pick-list style dropdown
 //! - [`number_input`] — Horizontal numeric input `(-|input|+)` with pill corners
+//! - [`hex_color_input`] — Compact hex color input with alpha `%` and floating picker
 //!
 //! Per-widget guides are also available in the repository's [`docs/`](https://github.com/anomalyco/NeverLiieIcedWidgets/tree/main/docs) folder.
 //!
@@ -56,6 +57,7 @@ pub mod confirmation_dialog;
 pub mod context_menu;
 pub mod ellipsis_text;
 pub mod ghost_text_input;
+pub mod hex_color_input;
 pub mod lazy_icon;
 pub mod overlay;
 pub mod slider_tooltip;

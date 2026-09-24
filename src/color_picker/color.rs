@@ -103,7 +103,9 @@ impl From<Hsv> for Color {
 ///
 /// Rounds to the nearest degree so repeated conversions do not drift
 /// downward (truncation would turn `29.9999` into `29` on every pass).
+/// Kept for the legacy ring math; the slider uses a linear mapping.
 #[must_use]
+#[allow(dead_code)]
 pub fn hue_from_angle(angle_deg: f32) -> u16 {
     angle_deg.rem_euclid(360.0).round() as u16 % 360
 }

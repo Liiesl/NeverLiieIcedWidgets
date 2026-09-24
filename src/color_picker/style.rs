@@ -7,7 +7,7 @@
 
 use iced::{
     widget::text_input::{self, Style as TextInputStyle},
-    Background, Color, Theme,
+    Background, Border, Color, Theme,
 };
 
 /// Linearly interpolates between two colors, clamping `t` to `0..=1`.
@@ -362,6 +362,46 @@ where
     }
 
     style
+}
+
+/// The [`text_input::Style`] for the hex field.
+///
+/// The hex `TextInput` lives *inside* the hex container panel (which already
+/// draws its own background/border in `overlay::hex_input`). A regular
+/// `text_input` style would paint a second nested box with the theme's input
+/// background, producing the double-frame look. This strips the inner
+/// background/border so only the outer panel frame shows, while keeping the
+/// picker's high-contrast value/placeholder colors and the theme's text
+/// selection color.
+#[must_use]
+pub fn hex_text_input<Theme>(theme: &Theme, status: text_input::Status) -> TextInputStyle
+where
+    Theme: Catalog + text_input::Catalog,
+{
+    let picker = <Theme as Catalog>::style(
+        theme,
+        &<Theme as Catalog>::default(),
+        Status::Active,
+    );
+
+    let base = <Theme as text_input::Catalog>::style(
+        theme,
+        &<Theme as text_input::Catalog>::default(),
+        status,
+    );
+
+    TextInputStyle {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border {
+            width: 0.0,
+            color: Color::TRANSPARENT,
+            ..base.border
+        },
+        icon: picker.text_secondary,
+        placeholder: picker.text_secondary,
+        value: picker.text_primary,
+        selection: base.selection,
+    }
 }
 
 #[cfg(test)]
