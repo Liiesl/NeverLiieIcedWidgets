@@ -72,7 +72,7 @@
 mod color;
 mod dropper;
 pub mod gradient;
-mod overlay;
+pub(crate) mod overlay;
 pub mod style;
 pub mod style_state;
 
