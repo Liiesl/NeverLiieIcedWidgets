@@ -4426,6 +4426,7 @@ where
             | Event::Touch(
                 touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. },
             ) => {
+                let was_dragging = self.content.state.header_drag_offset.is_some();
                 self.content.state.header_drag_offset = None;
                 let was_pressed = self.content.state.close_pressed;
                 self.content.state.close_pressed = false;
@@ -4433,6 +4434,8 @@ where
                     shell.publish(on_close);
                     shell.capture_event();
                     shell.request_redraw();
+                } else if was_dragging {
+                    shell.capture_event();
                 }
             }
             _ => {}
@@ -4453,13 +4456,12 @@ where
             shell.request_redraw();
         }
 
-        // Full modal block: while the floating window is open, nothing
-        // underneath may receive mouse hits. `mouse_interaction` below
-        // already reports `Idle` everywhere so the base tree gets an
-        // `Unavailable` cursor; here we swallow the events themselves so
-        // `UserInterface` never forwards them to the base widgets.
-        // Cursor moves are only swallowed over the dialog (or while
-        // dragging) so cursor-following `Position`s tracked in
+        // Strictly forward: consume a hit only when it lands on the
+        // floating window itself (`dialog_bounds`) or while a header drag
+        // is in progress. Anything outside falls through to the underlay
+        // so `UserInterface` forwards it to the base widgets.
+        // Cursor moves stay ungated outside the dialog so
+        // cursor-following `Position`s tracked in
         // `FloatingColorPicker::update` keep working.
         match event {
             Event::Mouse(
@@ -4472,7 +4474,9 @@ where
                 | touch::Event::FingerLifted { .. }
                 | touch::Event::FingerLost { .. },
             ) => {
-                shell.capture_event();
+                if cursor.is_over(dialog_bounds) || self.is_dragging() {
+                    shell.capture_event();
+                }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. })
             | Event::Touch(touch::Event::FingerMoved { .. }) => {
@@ -4519,10 +4523,22 @@ where
             interaction = interaction.max(mouse::Interaction::Grabbing);
         }
 
-        // Modal: report `Idle` everywhere else so the base tree receives an
-        // `Unavailable` cursor and loses hover while the picker is open.
-        // This overlay only exists while `show_picker` is true.
-        interaction.max(mouse::Interaction::Idle)
+        // Strictly forward: while the eyedropper is picking the overlay
+        // stays modal (its update swallows every event). Otherwise only
+        // report a hit when the cursor is over the window itself (or a
+        // header drag is in progress, so the grab survives leaving the
+        // window). Outside the window report `None` so the base tree keeps
+        // its cursor and hover. Inside the window ensure at least `Idle`
+        // so empty padding still blocks the base tree.
+        if self.content.state.dropper_mode != DropperMode::Idle {
+            return interaction.max(mouse::Interaction::Idle);
+        }
+
+        if cursor.is_over(layout.bounds()) || self.is_dragging() {
+            interaction.max(mouse::Interaction::Idle)
+        } else {
+            mouse::Interaction::None
+        }
     }
 
     fn operate(
