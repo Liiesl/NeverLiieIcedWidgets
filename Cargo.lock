@@ -1504,6 +1504,7 @@ dependencies = [
  "log",
  "num-traits",
  "rustc-hash 2.1.3",
+ "serde",
  "smol_str",
  "thiserror 2.0.19",
  "web-time",
@@ -2198,7 +2199,9 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "iced",
+ "iced_core",
  "num-traits",
+ "serde",
  "unicode-segmentation",
  "windows-sys 0.61.2",
 ]
