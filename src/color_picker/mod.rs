@@ -1,16 +1,18 @@
 //! Use a color picker as an input element for picking colors.
 //!
 //! Ported from `iced_aw`'s `widget::color_picker` module, with the dialog
-//! reworked to a single-column two-tab layout:
+//! reworked to a single-column three-tab layout:
 //!
-//! * top-level `[Color | Library]` tabs (in the draggable header for the
-//!   floating window, on top for the inline widget);
+//! * top-level `[Color | Gradient | Library]` tabs (in the draggable header
+//!   for the floating window, on top for the inline widget);
 //! * Color tab: saturation/value square + hue slider below it, HSV/RGB(A)
 //!   tabbed gradient sliders, value fields and a hex input;
+//! * Gradient tab: two-stop linear bar (no type selector) + Rect/HSV/RGBA
+//!   editor for the selected stop, value fields and a hex input;
 //! * Library tab: tabbed swatch sets (with an add-set name prompt and
 //!   per-set close marks), an add-current-color button and a recent colors
 //!   grid;
-//! * shared footer in both tabs: Original/New preview panels and the
+//! * shared footer in all tabs: Original/New preview panels and the
 //!   Reset/Eyedropper/OK buttons below the hex input.
 //!
 //! The dialog content is available in two shapes:
@@ -21,9 +23,9 @@
 //!   the element.
 //! * [`FloatingColorPicker`] — wraps an underlay (typically a button) and,
 //!   while shown, spawns the same dialog inside a free-floating window-like
-//!   shell: a draggable header with `[Color | Library]` tabs, a drag area
-//!   and a close ("x") button. It is still a regular overlay/widget, not a
-//!   separate OS window; the dragged position survives close/reopen.
+//!   shell: a draggable header with `[Color | Gradient | Library]` tabs, a
+//!   drag area and a close ("x") button. It is still a regular overlay/widget,
+//!   not a separate OS window; the dragged position survives close/reopen.
 //!
 //! Swatches and recent colors are kept in memory only (no persistence),
 //! and all styling is derived from the active iced `Theme` palette.
@@ -69,11 +71,13 @@
 
 mod color;
 mod dropper;
+pub mod gradient;
 mod overlay;
 pub mod style;
 pub mod style_state;
 
 pub use dropper::DropperBuffer;
+pub use gradient::{Gradient, GradientStop, PickedValue};
 
 use self::dropper::DropperMode;
 use self::overlay::{
@@ -145,6 +149,20 @@ where
     on_submit: Box<dyn Fn(Color) -> Message>,
     /// Optional function that produces a message when the color changes during selection (real-time updates).
     on_color_change: Option<Box<dyn Fn(Color) -> Message>>,
+    /// Initial gradient for the Gradient tab (`None` = solid `color`).
+    gradient: Option<Gradient>,
+    /// Optional function producing a message with the gradient when submit
+    /// is pressed while the Gradient tab is active.
+    on_gradient_submit: Option<Box<dyn Fn(Gradient) -> Message>>,
+    /// Optional function producing a message when the gradient changes
+    /// during selection (real-time updates).
+    on_gradient_change: Option<Box<dyn Fn(Gradient) -> Message>>,
+    /// Optional unified change callback with the picked value (solid color
+    /// or gradient) for the active tab.
+    on_pick: Option<Box<dyn Fn(PickedValue) -> Message>>,
+    /// Optional unified submit callback with the picked value (solid color
+    /// or gradient) for the active tab.
+    on_pick_submit: Option<Box<dyn Fn(PickedValue) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -201,6 +219,10 @@ where
             self.on_cancel.clone(),
             &self.on_submit,
             self.on_color_change.as_deref(),
+            self.on_gradient_submit.as_deref(),
+            self.on_gradient_change.as_deref(),
+            self.on_pick.as_deref(),
+            self.on_pick_submit.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -228,6 +250,11 @@ where
             on_cancel,
             on_submit: Box::new(on_submit),
             on_color_change: None,
+            gradient: None,
+            on_gradient_submit: None,
+            on_gradient_change: None,
+            on_pick: None,
+            on_pick_submit: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             class: <Theme as style::Catalog>::default(),
@@ -242,6 +269,57 @@ where
         F: 'static + Fn(Color) -> Message,
     {
         self.on_color_change = Some(Box::new(on_color_change));
+        self
+    }
+
+    /// Sets the initial gradient edited in the Gradient tab.
+    #[must_use]
+    pub fn gradient(mut self, gradient: Gradient) -> Self {
+        self.gradient = Some(gradient);
+        self
+    }
+
+    /// Sets the callback producing a message with the gradient when submit
+    /// is pressed while the Gradient tab is active.
+    #[must_use]
+    pub fn on_gradient_submit<F>(mut self, on_gradient_submit: F) -> Self
+    where
+        F: 'static + Fn(Gradient) -> Message,
+    {
+        self.on_gradient_submit = Some(Box::new(on_gradient_submit));
+        self
+    }
+
+    /// Sets the callback producing a message when the gradient changes
+    /// during selection (real-time updates).
+    #[must_use]
+    pub fn on_gradient_change<F>(mut self, on_gradient_change: F) -> Self
+    where
+        F: 'static + Fn(Gradient) -> Message,
+    {
+        self.on_gradient_change = Some(Box::new(on_gradient_change));
+        self
+    }
+
+    /// Sets a unified callback with the picked value (solid or gradient)
+    /// for the active tab on every selection change.
+    #[must_use]
+    pub fn on_pick<F>(mut self, on_pick: F) -> Self
+    where
+        F: 'static + Fn(PickedValue) -> Message,
+    {
+        self.on_pick = Some(Box::new(on_pick));
+        self
+    }
+
+    /// Sets a unified callback with the picked value (solid or gradient)
+    /// for the active tab when submit is pressed.
+    #[must_use]
+    pub fn on_pick_submit<F>(mut self, on_pick_submit: F) -> Self
+    where
+        F: 'static + Fn(PickedValue) -> Message,
+    {
+        self.on_pick_submit = Some(Box::new(on_pick_submit));
         self
     }
 
@@ -313,6 +391,8 @@ pub struct State {
     /// The `color` seen during the previous render; used to detect external
     /// changes without clobbering live edits echoed back by the application.
     pub(crate) old_color: Color,
+    /// The `gradient` seen during the previous render (`None` = solid).
+    pub(crate) old_gradient: Option<Gradient>,
 }
 
 impl std::fmt::Debug for State {
@@ -332,25 +412,61 @@ impl State {
             overlay_state: UnsafeCell::new(overlay::State::new(color)),
             content_tree: std::ptr::null_mut(),
             old_color: color,
+            old_gradient: None,
         }
     }
 
-    /// Resets the color of the state.
+    /// Creates a new [`State`] with an initial gradient.
+    #[must_use]
+    pub fn with_gradient(color: Color, gradient: Gradient) -> Self {
+        Self {
+            overlay_state: UnsafeCell::new(overlay::State::with_gradient(
+                color,
+                gradient.clone(),
+            )),
+            content_tree: std::ptr::null_mut(),
+            old_color: color,
+            old_gradient: Some(gradient),
+        }
+    }
+
+    /// Resets the color and gradient of the state.
     pub fn reset(&mut self) {
         let state = self.overlay_state.get_mut();
-        state.color = Color::from_rgb(0.5, 0.25, 0.25);
+        let default = Color::from_rgb(0.5, 0.25, 0.25);
+        state.color = default;
+        state.initial_color = default;
+        state.gradient = Gradient::two(default, default);
+        state.initial_gradient = Gradient::two(default, default);
+        state.initial_is_gradient = false;
         state.color_bar_dragged = ColorBarDragged::None;
+        state.gradient_bar_dragged = None;
         state.sync_display();
     }
 
     /// Re-seed the dialog when the application passes a genuinely new
-    /// color: one that differs from both the previous argument (so echoed
-    /// live updates are ignored) and the current internal selection.
-    fn synchronize(&mut self, color: Color) {
-        if color != self.old_color && color != self.overlay_state.get_mut().color {
-            self.overlay_state.get_mut().force_synchronize(color);
+    /// color or gradient: values differing from both the previous argument
+    /// (so echoed live updates are ignored) and the current internal
+    /// selection re-snapshot Original.
+    fn synchronize(&mut self, color: Color, gradient: Option<&Gradient>) {
+        let overlay_state = self.overlay_state.get_mut();
+        if color != self.old_color && color != overlay_state.color {
+            overlay_state.force_synchronize(color);
         }
         self.old_color = color;
+        match gradient {
+            Some(gradient) => {
+                let changed_arg = self.old_gradient.as_ref() != Some(gradient);
+                let differs_live = overlay_state.gradient != *gradient;
+                if changed_arg && differs_live {
+                    overlay_state.force_synchronize_gradient(gradient.clone());
+                }
+                self.old_gradient = Some(gradient.clone());
+            }
+            None => {
+                self.old_gradient = None;
+            }
+        }
     }
 }
 
@@ -370,7 +486,10 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::new(self.color))
+        tree::State::new(match &self.gradient {
+            Some(gradient) => State::with_gradient(self.color, gradient.clone()),
+            None => State::new(self.color),
+        })
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -380,7 +499,7 @@ where
     fn diff(&self, tree: &mut Tree) {
         let picker_state = tree.state.downcast_mut::<State>();
 
-        picker_state.synchronize(self.color);
+        picker_state.synchronize(self.color, self.gradient.as_ref());
 
         tree.diff_children(std::slice::from_ref(&self.content_state));
     }
@@ -402,6 +521,10 @@ where
             self.on_cancel.clone(),
             &self.on_submit,
             self.on_color_change.as_deref(),
+            self.on_gradient_submit.as_deref(),
+            self.on_gradient_change.as_deref(),
+            self.on_pick.as_deref(),
+            self.on_pick_submit.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -434,6 +557,10 @@ where
             self.on_cancel.clone(),
             &self.on_submit,
             self.on_color_change.as_deref(),
+            self.on_gradient_submit.as_deref(),
+            self.on_gradient_change.as_deref(),
+            self.on_pick.as_deref(),
+            self.on_pick_submit.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -495,6 +622,10 @@ where
             self.on_cancel.clone(),
             &self.on_submit,
             self.on_color_change.as_deref(),
+            self.on_gradient_submit.as_deref(),
+            self.on_gradient_change.as_deref(),
+            self.on_pick.as_deref(),
+            self.on_pick_submit.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -646,6 +777,20 @@ where
     on_submit: Box<dyn Fn(Color) -> Message>,
     /// Optional function that produces a message when the color changes during selection (real-time updates).
     on_color_change: Option<Box<dyn Fn(Color) -> Message>>,
+    /// Initial gradient for the Gradient tab (`None` = solid `color`).
+    gradient: Option<Gradient>,
+    /// Optional function producing a message with the gradient when submit
+    /// is pressed while the Gradient tab is active.
+    on_gradient_submit: Option<Box<dyn Fn(Gradient) -> Message>>,
+    /// Optional function producing a message when the gradient changes
+    /// during selection (real-time updates).
+    on_gradient_change: Option<Box<dyn Fn(Gradient) -> Message>>,
+    /// Optional unified change callback with the picked value (solid color
+    /// or gradient) for the active tab.
+    on_pick: Option<Box<dyn Fn(PickedValue) -> Message>>,
+    /// Optional unified submit callback with the picked value (solid color
+    /// or gradient) for the active tab.
+    on_pick_submit: Option<Box<dyn Fn(PickedValue) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -701,6 +846,11 @@ where
             on_cancel,
             on_submit: Box::new(on_submit),
             on_color_change: None,
+            gradient: None,
+            on_gradient_submit: None,
+            on_gradient_change: None,
+            on_pick: None,
+            on_pick_submit: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             class: <Theme as style::Catalog>::default(),
@@ -716,6 +866,57 @@ where
         F: 'static + Fn(Color) -> Message,
     {
         self.on_color_change = Some(Box::new(on_color_change));
+        self
+    }
+
+    /// Sets the initial gradient edited in the Gradient tab.
+    #[must_use]
+    pub fn gradient(mut self, gradient: Gradient) -> Self {
+        self.gradient = Some(gradient);
+        self
+    }
+
+    /// Sets the callback producing a message with the gradient when submit
+    /// is pressed while the Gradient tab is active.
+    #[must_use]
+    pub fn on_gradient_submit<F>(mut self, on_gradient_submit: F) -> Self
+    where
+        F: 'static + Fn(Gradient) -> Message,
+    {
+        self.on_gradient_submit = Some(Box::new(on_gradient_submit));
+        self
+    }
+
+    /// Sets the callback producing a message when the gradient changes
+    /// during selection (real-time updates).
+    #[must_use]
+    pub fn on_gradient_change<F>(mut self, on_gradient_change: F) -> Self
+    where
+        F: 'static + Fn(Gradient) -> Message,
+    {
+        self.on_gradient_change = Some(Box::new(on_gradient_change));
+        self
+    }
+
+    /// Sets a unified callback with the picked value (solid or gradient)
+    /// for the active tab on every selection change.
+    #[must_use]
+    pub fn on_pick<F>(mut self, on_pick: F) -> Self
+    where
+        F: 'static + Fn(PickedValue) -> Message,
+    {
+        self.on_pick = Some(Box::new(on_pick));
+        self
+    }
+
+    /// Sets a unified callback with the picked value (solid or gradient)
+    /// for the active tab when submit is pressed.
+    #[must_use]
+    pub fn on_pick_submit<F>(mut self, on_pick_submit: F) -> Self
+    where
+        F: 'static + Fn(PickedValue) -> Message,
+    {
+        self.on_pick_submit = Some(Box::new(on_pick_submit));
         self
     }
 
@@ -805,10 +1006,26 @@ impl FloatingState {    /// Creates a new [`FloatingState`].
         }
     }
 
-    /// Resets the color of the state.
+    /// Creates a new [`FloatingState`] with an initial gradient.
+    #[must_use]
+    pub fn with_gradient(color: Color, gradient: Gradient) -> Self {
+        Self {
+            overlay_state: overlay::State::with_gradient(color, gradient),
+            old_show_picker: false,
+            last_cursor_position: Point::ORIGIN,
+        }
+    }
+
+    /// Resets the color and gradient of the state.
     pub fn reset(&mut self) {
-        self.overlay_state.color = Color::from_rgb(0.5, 0.25, 0.25);
+        let default = Color::from_rgb(0.5, 0.25, 0.25);
+        self.overlay_state.color = default;
+        self.overlay_state.initial_color = default;
+        self.overlay_state.gradient = Gradient::two(default, default);
+        self.overlay_state.initial_gradient = Gradient::two(default, default);
+        self.overlay_state.initial_is_gradient = false;
         self.overlay_state.color_bar_dragged = ColorBarDragged::None;
+        self.overlay_state.gradient_bar_dragged = None;
         self.overlay_state.sync_display();
     }
 
@@ -818,9 +1035,17 @@ impl FloatingState {    /// Creates a new [`FloatingState`].
     /// the value: the initial color must stay frozen at the open-time color
     /// so the Original preview panel does not track live `on_color_change`
     /// updates. When it is reopened, reset the color to the provided one.
-    fn synchronize(&mut self, show_picker: bool, color: Color) {
+    fn synchronize(
+        &mut self,
+        show_picker: bool,
+        color: Color,
+        gradient: Option<&Gradient>,
+    ) {
         if show_picker && !self.old_show_picker {
             self.overlay_state.force_synchronize(color);
+            if let Some(gradient) = gradient {
+                self.overlay_state.force_synchronize_gradient(gradient.clone());
+            }
         }
         self.old_show_picker = show_picker;
     }
@@ -842,7 +1067,10 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(FloatingState::new(self.color))
+        tree::State::new(match &self.gradient {
+            Some(gradient) => FloatingState::with_gradient(self.color, gradient.clone()),
+            None => FloatingState::new(self.color),
+        })
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -852,7 +1080,7 @@ where
     fn diff(&self, tree: &mut Tree) {
         let picker_state = tree.state.downcast_mut::<FloatingState>();
 
-        picker_state.synchronize(self.show_picker, self.color);
+        picker_state.synchronize(self.show_picker, self.color, self.gradient.as_ref());
 
         tree.diff_children(&[&self.underlay, &self.overlay_state]);
     }
@@ -983,6 +1211,10 @@ where
                 self.on_cancel.clone(),
                 &self.on_submit,
                 self.on_color_change.as_deref(),
+                self.on_gradient_submit.as_deref(),
+                self.on_gradient_change.as_deref(),
+                self.on_pick.as_deref(),
+                self.on_pick_submit.as_deref(),
                 self.dropper_buffer.as_ref(),
                 self.on_dropper_capture.as_deref(),
                 self.position,
@@ -1213,12 +1445,12 @@ mod tests {
         // back through the `color` argument. That echo must not clobber the
         // internal selection.
         state.overlay_state.get_mut().apply_color(live_color);
-        state.synchronize(live_color);
+        state.synchronize(live_color, None);
         assert_eq!(state.overlay_state.get_mut().color, live_color);
 
         // A genuinely different external color re-seeds the dialog.
         let reset_color = Color::from_rgb(0.0, 1.0, 0.0);
-        state.synchronize(reset_color);
+        state.synchronize(reset_color, None);
         assert_eq!(state.overlay_state.get_mut().color, reset_color);
     }
 
@@ -1231,7 +1463,7 @@ mod tests {
         // keeps arriving every frame and must not freeze the dialog.
         let edited = Color::from_rgb(0.2, 0.2, 0.8);
         state.overlay_state.get_mut().apply_color(edited);
-        state.synchronize(open_color);
+        state.synchronize(open_color, None);
         assert_eq!(state.overlay_state.get_mut().color, edited);
     }
 
@@ -1241,19 +1473,19 @@ mod tests {
         let live_color = Color::from_rgb(1.0, 0.0, 0.0);
         let mut state = FloatingState::new(open_color);
 
-        state.synchronize(true, open_color);
+        state.synchronize(true, open_color, None);
         assert_eq!(state.overlay_state.color, open_color);
         assert_eq!(state.overlay_state.initial_color, open_color);
 
         // Live `on_color_change` re-renders must not clobber the initial
         // color while the picker is open.
-        state.synchronize(true, live_color);
+        state.synchronize(true, live_color, None);
         assert_eq!(state.overlay_state.color, open_color);
         assert_eq!(state.overlay_state.initial_color, open_color);
 
         // Reopening with a different color resets both.
-        state.synchronize(false, open_color);
-        state.synchronize(true, live_color);
+        state.synchronize(false, open_color, None);
+        state.synchronize(true, live_color, None);
         assert_eq!(state.overlay_state.color, live_color);
         assert_eq!(state.overlay_state.initial_color, live_color);
     }

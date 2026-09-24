@@ -8,6 +8,7 @@ use super::{
         Hsv,
     },
     dropper::{DropperBuffer, DropperMode, Frame},
+    gradient::{Gradient, PickedValue, same_picked},
     style::{self, Status, Style},
     style_state::StyleState,
 };
@@ -72,9 +73,25 @@ const INNER_DIAMETER: f32 = 230.0;
 /// Height of the hue slider placed below the S/V square.
 const HUE_SLIDER_HEIGHT: f32 = 16.0;
 /// Width of one top-level tab in the header bar.
-const TOP_TAB_WIDTH: f32 = 78.0;
+const TOP_TAB_WIDTH: f32 = 62.0;
 /// Height of one top-level tab in the header bar.
 const TOP_TAB_HEIGHT: f32 = 20.0;
+/// Height of the gradient stop bar (color strip only).
+const GRADIENT_BAR_HEIGHT: f32 = 28.0;
+/// Width/height of a gradient stop pin body. Pins sit on top of the bar,
+/// Figma-style, with a pointer nub stabbed into the exact bar position.
+const GRADIENT_PIN_WIDTH: f32 = 22.0;
+const GRADIENT_PIN_HEIGHT: f32 = 20.0;
+/// Gap between the pin body bottom and the bar top; the pointer bridges it.
+const GRADIENT_PIN_GAP: f32 = 2.0;
+/// Height of the pin row above the bar.
+const GRADIENT_PIN_ROW: f32 = GRADIENT_PIN_HEIGHT + GRADIENT_PIN_GAP;
+/// How deep into the bar the pointer apex reaches.
+const GRADIENT_PIN_APEX_DEPTH: f32 = 8.0;
+/// Half-width of the pointer base (base = half the pin body width).
+const GRADIENT_PIN_POINTER_HALF: f32 = 5.5;
+/// Total height of the gradient bar section (pins + bar).
+const GRADIENT_BAR_TOTAL: f32 = GRADIENT_PIN_ROW + GRADIENT_BAR_HEIGHT;
 /// The height of the tab bar.
 const TAB_BAR_HEIGHT: f32 = 30.0;
 /// The spacing between the slider rows (Qt: controls_v_layout spacing 8).
@@ -133,8 +150,24 @@ pub enum PickerTab {
     /// Raw color controls (square + hue slider + RGB/HSV + hex).
     #[default]
     Color,
+    /// Two-stop gradient editor (stop bar + Rect/HSV/RGBA for the
+    /// selected stop + hex).
+    Gradient,
     /// Swatch sets + recent colors library.
     Library,
+}
+
+/// The editor shown below the gradient stop bar: the S/V square ("Rect")
+/// or the channel sliders for the selected stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GradientEditorTab {
+    /// Saturation/value square + hue slider for the selected stop.
+    #[default]
+    Rect,
+    /// HSV channel sliders for the selected stop.
+    Hsv,
+    /// RGBA channel sliders for the selected stop.
+    Rgba,
 }
 
 /// A named swatch set of the swatch tab bar.
@@ -142,8 +175,8 @@ pub enum PickerTab {
 pub struct SwatchSet {
     /// The display name of the set.
     pub name: String,
-    /// The colors in the set.
-    pub colors: Vec<Color>,
+    /// The picked values (solids or gradients) in the set.
+    pub colors: Vec<PickedValue>,
 }
 
 /// Hit-test results of the swatch section, recomputed per frame.
@@ -288,9 +321,10 @@ fn close_button_rect(header: Rectangle) -> Rectangle {
     }
 }
 
-/// The rectangles of the top-level `[Color | Library]` tabs inside the
-/// window `header`. Tabs are left-aligned; the middle strip stays draggable.
-fn top_tab_rects(header: Rectangle) -> (Rectangle, Rectangle) {
+/// The rectangles of the top-level `[Color | Gradient | Library]` tabs
+/// inside the window `header`. Tabs are left-aligned; the middle strip
+/// stays draggable.
+fn top_tab_rects(header: Rectangle) -> (Rectangle, Rectangle, Rectangle) {
     let y = header.y + (header.height - TOP_TAB_HEIGHT) / 2.0;
     let color = Rectangle {
         x: header.x + 6.0,
@@ -298,13 +332,57 @@ fn top_tab_rects(header: Rectangle) -> (Rectangle, Rectangle) {
         width: TOP_TAB_WIDTH,
         height: TOP_TAB_HEIGHT,
     };
-    let library = Rectangle {
+    let gradient = Rectangle {
         x: color.x + color.width + 6.0,
         y,
         width: TOP_TAB_WIDTH,
         height: TOP_TAB_HEIGHT,
     };
-    (color, library)
+    let library = Rectangle {
+        x: gradient.x + gradient.width + 6.0,
+        y,
+        width: TOP_TAB_WIDTH,
+        height: TOP_TAB_HEIGHT,
+    };
+    (color, gradient, library)
+}
+
+/// The pin body rect of a stop for the given section rect (the whole
+/// pins + bar area). The strip is inset by half a pin width on each side,
+/// so the body sits in the pin row above the bar with the pointer apex
+/// landing exactly on the strip's edge at offsets 0 and 1.
+fn gradient_handle_rect(section: Rectangle, offset: f32) -> Rectangle {
+    let strip = gradient_strip_rect(section);
+    let cx = strip.x + strip.width * offset.clamp(0.0, 1.0);
+    Rectangle {
+        x: cx - GRADIENT_PIN_WIDTH / 2.0,
+        y: section.y,
+        width: GRADIENT_PIN_WIDTH,
+        height: GRADIENT_PIN_HEIGHT,
+    }
+}
+
+/// The pointer nub rect of a stop: from inside the pin body down to the
+/// apex stabbed into the bar. Used for hit-testing the pointer.
+fn gradient_pointer_rect(section: Rectangle, offset: f32) -> Rectangle {
+    let body = gradient_handle_rect(section, offset);
+    Rectangle {
+        x: body.center_x() - GRADIENT_PIN_POINTER_HALF,
+        y: body.y + body.height - 2.0,
+        width: GRADIENT_PIN_POINTER_HALF * 2.0,
+        height: GRADIENT_PIN_ROW + GRADIENT_PIN_APEX_DEPTH - body.height + 2.0,
+    }
+}
+
+/// The color strip rect inside the section rect, inset by half a pin
+/// width on each side so end stops point at the strip's edge.
+fn gradient_strip_rect(section: Rectangle) -> Rectangle {
+    Rectangle {
+        x: section.x + GRADIENT_PIN_WIDTH / 2.0,
+        y: section.y + GRADIENT_PIN_ROW,
+        width: (section.width - GRADIENT_PIN_WIDTH).max(1.0),
+        height: GRADIENT_BAR_HEIGHT,
+    }
 }
 
 /// Returns true if a point (relative to the picker bounds origin) lies inside
@@ -393,19 +471,19 @@ pub(crate) fn same_rgba(a: Color, b: Color) -> bool {
         && (a.a * 255.0) as u8 == (b.a * 255.0) as u8
 }
 
-/// Inserts `color` at the front of a swatch set: removes an existing
-/// byte-exact duplicate, then truncates to [`MAX_SWATCHES_PER_SET`].
-fn insert_swatch(colors: &mut Vec<Color>, color: Color) {
-    colors.retain(|c| !same_rgba(*c, color));
-    colors.insert(0, color);
+/// Inserts `picked` at the front of a swatch set: removes an existing
+/// duplicate, then truncates to [`MAX_SWATCHES_PER_SET`].
+fn insert_swatch(colors: &mut Vec<PickedValue>, picked: PickedValue) {
+    colors.retain(|c| !same_picked(c, &picked));
+    colors.insert(0, picked);
     colors.truncate(MAX_SWATCHES_PER_SET);
 }
 
-/// Inserts a color into the recent colors list: dedupe, insert front,
+/// Inserts a picked value into the recent list: dedupe, insert front,
 /// truncate to [`MAX_RECENT`].
-fn push_recent(colors: &mut Vec<Color>, color: Color) {
-    colors.retain(|c| !same_rgba(*c, color));
-    colors.insert(0, color);
+fn push_recent(colors: &mut Vec<PickedValue>, picked: PickedValue) {
+    colors.retain(|c| !same_picked(c, &picked));
+    colors.insert(0, picked);
     colors.truncate(MAX_RECENT);
 }
 
@@ -518,6 +596,18 @@ where
     on_submit: &'a dyn Fn(Color) -> Message,
     /// Optional function that produces a message when the color changes during selection (real-time updates).
     on_color_change: Option<&'a dyn Fn(Color) -> Message>,
+    /// Optional function producing a message with the gradient when the
+    /// submit button is pressed while the Gradient tab is active.
+    on_gradient_submit: Option<&'a dyn Fn(Gradient) -> Message>,
+    /// Optional function producing a message when the gradient changes
+    /// during selection (real-time updates).
+    on_gradient_change: Option<&'a dyn Fn(Gradient) -> Message>,
+    /// Optional unified change callback with the picked value (solid or
+    /// gradient) for the active tab.
+    on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
+    /// Optional unified submit callback with the picked value (solid or
+    /// gradient) for the active tab.
+    on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
     /// The shared buffer where the application deposits window screenshots
     /// for the eye dropper. The eyedropper button is disabled while this is
     /// `None`.
@@ -557,6 +647,10 @@ where
         on_cancel: Message,
         on_submit: &'a dyn Fn(Color) -> Message,
         on_color_change: Option<&'a dyn Fn(Color) -> Message>,
+        on_gradient_submit: Option<&'a dyn Fn(Gradient) -> Message>,
+        on_gradient_change: Option<&'a dyn Fn(Gradient) -> Message>,
+        on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
+        on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         lens_in_content_draw: bool,
@@ -651,12 +745,41 @@ where
             new_set_name_input: name_input,
             on_submit,
             on_color_change,
+            on_gradient_submit,
+            on_gradient_change,
+            on_pick,
+            on_pick_submit,
             dropper_buffer,
             on_dropper_capture,
             lens_in_content_draw,
             class,
             tree,
             viewport,
+        }
+    }
+
+    /// Publishes color + gradient + unified pick change messages.
+    fn notify_changed(&self, shell: &mut Shell<Message>) {
+        if let Some(on_color_change) = self.on_color_change {
+            shell.publish(on_color_change(self.state.color));
+        }
+        if self.state.picker_tab == PickerTab::Gradient
+            && let Some(on_gradient_change) = self.on_gradient_change
+        {
+            shell.publish(on_gradient_change(self.state.gradient.clone()));
+        }
+        if let Some(on_pick) = self.on_pick {
+            shell.publish(on_pick(self.state.current_picked()));
+        }
+    }
+
+    /// Switches the gradient editor tab and refreshes the field values.
+    fn set_gradient_editor(&mut self, tab: GradientEditorTab, shell: &mut Shell<Message>) {
+        if self.state.gradient_editor != tab {
+            self.state.gradient_editor = tab;
+            self.state.sync_display();
+            self.state.clear_cache();
+            shell.invalidate_layout();
         }
     }
 
@@ -678,14 +801,16 @@ where
         let hsv_color: Hsv = self.state.hsv();
         let mut color_changed = false;
 
-        let sat_value_bounds = hsv_color_children
-            .next()
-            .expect("widget: Layout should have a sat/value layout")
-            .bounds();
-        let hue_bounds = hsv_color_children
-            .next()
-            .expect("widget: Layout should have a hue layout")
-            .bounds();
+        // NOTE: the layout may be stale for this frame (see
+        // `on_event_sliders`); bail out instead of panicking.
+        let Some(sat_value_layout) = hsv_color_children.next() else {
+            return event::Status::Ignored;
+        };
+        let sat_value_bounds = sat_value_layout.bounds();
+        let Some(hue_layout) = hsv_color_children.next() else {
+            return event::Status::Ignored;
+        };
+        let hue_bounds = hue_layout.bounds();
 
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => match delta {
@@ -790,14 +915,120 @@ where
         }
 
         if color_changed {
-            // Call on_color_change callback for real-time updates
-            if let Some(on_color_change) = self.on_color_change {
-                shell.publish(on_color_change(self.state.color));
-            }
+            // Real-time updates for the square/hue editor.
+            self.notify_changed(shell);
             event::Status::Captured
         } else {
             event::Status::Ignored
         }
+    }
+
+    /// The event handling for the gradient stop bar: click selects the
+    /// nearest stop, drag moves it along the bar.
+    fn on_event_gradient_bar(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        shell: &mut Shell<Message>,
+    ) -> event::Status {
+        // The Gradient picker node has a single child: the bar container.
+        let mut picker_children = layout.children();
+        let Some(bar_layout) = picker_children.next() else {
+            return event::Status::Ignored;
+        };
+        let mut bar_children = bar_layout.children();
+        let Some(strip_layout) = bar_children.next() else {
+            return event::Status::Ignored;
+        };
+        let strip = strip_layout.bounds();
+        if strip.width <= 0.0 || strip.height <= 0.0 {
+            return event::Status::Ignored;
+        }
+        let section = bar_layout.bounds();
+        // Pins are computed mathematically so selection works even when
+        // the layout children are stale: body + pointer nub each.
+        let pins: Vec<(Rectangle, Rectangle)> = (0..2)
+            .map(|i| {
+                let offset = self.state.gradient.stop(i).map_or(i as f32, |s| s.offset);
+                (
+                    gradient_handle_rect(section, offset),
+                    gradient_pointer_rect(section, offset),
+                )
+            })
+            .collect();
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                let mut hit: Option<usize> = None;
+                for (i, (handle, pointer)) in pins.iter().enumerate() {
+                    if cursor.is_over(*handle) || cursor.is_over(*pointer) {
+                        hit = Some(i);
+                        break;
+                    }
+                }
+                if hit.is_none() && cursor.is_over(strip) {
+                    // Select the nearest stop to the click.
+                    if let Some(pos) = cursor.land().position() {
+                        let t = ((pos.x - strip.x) / strip.width).clamp(0.0, 1.0);
+                        let d0 = (self
+                            .state
+                            .gradient
+                            .stop(0)
+                            .map_or(0.0, |s| s.offset)
+                            - t)
+                            .abs();
+                        let d1 = (self
+                            .state
+                            .gradient
+                            .stop(1)
+                            .map_or(1.0, |s| s.offset)
+                            - t)
+                            .abs();
+                        hit = Some(if d0 <= d1 { 0 } else { 1 });
+                    }
+                }
+                if let Some(idx) = hit {
+                    if self.state.selected_stop != idx {
+                        self.state.select_stop(idx);
+                    }
+                    self.state.gradient_bar_dragged = Some(idx);
+                    self.state.focus = Focus::GradientBar;
+                    // Jump the dragged stop to the click position on the strip.
+                    if cursor.is_over(strip)
+                        && let Some(pos) = cursor.land().position()
+                    {
+                        let t = ((pos.x - strip.x) / strip.width).clamp(0.0, 1.0);
+                        self.state.gradient.set_stop_offset(idx, t);
+                        self.state.clear_cache();
+                    }
+                    self.notify_changed(shell);
+                    return event::Status::Captured;
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. }) => {
+                if self.state.gradient_bar_dragged.is_some() {
+                    self.state.gradient_bar_dragged = None;
+                    return event::Status::Captured;
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(idx) = self.state.gradient_bar_dragged {
+            if let Some(pos) = cursor.land().position() {
+                let t = ((pos.x - strip.x) / strip.width).clamp(0.0, 1.0);
+                self.state.gradient.set_stop_offset(idx, t);
+                self.state.clear_cache();
+                self.notify_changed(shell);
+                return event::Status::Captured;
+            }
+            return event::Status::Captured;
+        }
+
+        event::Status::Ignored
     }
 
     /// The event handling for the slider rows of the active tab
@@ -814,21 +1045,28 @@ where
         let mut color_changed = false;
         let mut captured = false;
 
+        // NOTE: the layout may be stale for this frame: switching the
+        // editor sub-tab invalidates the layout but event handling continues
+        // with the previous tree (e.g. Rect has no slider rows). Bail out
+        // instead of panicking; the fresh layout arrives next frame.
         let mut row_bounds = Vec::new();
         for _ in 0..4 {
-            let mut row_children = slider_children
-                .next()
-                .expect("widget: Layout should have a slider row layout")
-                .children();
+            let Some(row_layout) = slider_children.next() else {
+                return event::Status::Ignored;
+            };
+            let mut row_children = row_layout.children();
             let _ = row_children.next();
-            let bar_bounds = row_children
-                .next()
-                .expect("widget: Layout should have a bar layout")
-                .bounds();
-            row_bounds.push(bar_bounds);
+            let Some(bar_layout) = row_children.next() else {
+                return event::Status::Ignored;
+            };
+            row_bounds.push(bar_layout.bounds());
         }
 
-        let channels = self.active_tab_channels();
+        let channels = if self.state.picker_tab == PickerTab::Gradient {
+            self.state.gradient_channels()
+        } else {
+            self.active_tab_channels()
+        };
 
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => match delta {
@@ -1042,10 +1280,8 @@ where
         }
 
         if color_changed {
-            // Call on_color_change callback for real-time updates
-            if let Some(on_color_change) = self.on_color_change {
-                shell.publish(on_color_change(self.state.color));
-            }
+            // Real-time updates for the channel sliders.
+            self.notify_changed(shell);
             event::Status::Captured
         } else if captured {
             event::Status::Captured
@@ -1072,6 +1308,7 @@ where
                         self.state.focus,
                         self.state.picker_tab,
                         self.state.active_tab,
+                        self.state.gradient_editor,
                         self.state.naming_new_set,
                     );
                 } else {
@@ -1079,6 +1316,7 @@ where
                         self.state.focus,
                         self.state.picker_tab,
                         self.state.active_tab,
+                        self.state.gradient_editor,
                         self.state.naming_new_set,
                     );
                 }
@@ -1242,6 +1480,25 @@ where
                                 event::Status::Captured
                             }
                             keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                                self.state.focus = Focus::TopGradient;
+                                event::Status::Captured
+                            }
+                            _ => event::Status::Ignored,
+                        };
+                    }
+                    Focus::TopGradient => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                            ) => {
+                                self.set_picker_tab(PickerTab::Gradient, shell);
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                                self.state.focus = Focus::TopColor;
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
                                 self.state.focus = Focus::TopLibrary;
                                 event::Status::Captured
                             }
@@ -1257,10 +1514,59 @@ where
                                 event::Status::Captured
                             }
                             keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
-                                self.state.focus = Focus::TopColor;
+                                self.state.focus = Focus::TopGradient;
                                 event::Status::Captured
                             }
                             _ => event::Status::Ignored,
+                        };
+                    }
+                    Focus::GradientBar => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::ArrowLeft
+                                | keyboard::key::Named::ArrowDown,
+                            ) => {
+                                let idx = self.state.selected_stop;
+                                let cur = self
+                                    .state
+                                    .gradient
+                                    .stop(idx)
+                                    .map_or(0.0, |s| s.offset);
+                                self.state.gradient.set_stop_offset(idx, cur - 0.01);
+                                self.state.clear_cache();
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(
+                                keyboard::key::Named::ArrowRight
+                                | keyboard::key::Named::ArrowUp,
+                            ) => {
+                                let idx = self.state.selected_stop;
+                                let cur = self
+                                    .state
+                                    .gradient
+                                    .stop(idx)
+                                    .map_or(0.0, |s| s.offset);
+                                self.state.gradient.set_stop_offset(idx, cur + 0.01);
+                                self.state.clear_cache();
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::Tab) => {
+                                event::Status::Ignored
+                            }
+                            _ => {
+                                if matches!(
+                                    key,
+                                    keyboard::Key::Named(
+                                        keyboard::key::Named::Enter | keyboard::key::Named::Space
+                                    )
+                                ) {
+                                    let next = (self.state.selected_stop + 1) % 2;
+                                    self.state.select_stop(next);
+                                    event::Status::Captured
+                                } else {
+                                    event::Status::Ignored
+                                }
+                            }
                         };
                     }
                     Focus::Square => {
@@ -1308,12 +1614,33 @@ where
                         hsv.hue = self.state.hue;
                         status = hsv_val_handle(key, &mut self.state.color, hsv);
                     }
+                    Focus::TabRect => {
+                        status = match key {
+                            keyboard::Key::Named(
+                                keyboard::key::Named::Enter | keyboard::key::Named::Space,
+                            ) => {
+                                if self.state.picker_tab == PickerTab::Gradient {
+                                    self.set_gradient_editor(GradientEditorTab::Rect, shell);
+                                }
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                                self.state.focus = Focus::TabHsv;
+                                event::Status::Captured
+                            }
+                            _ => event::Status::Ignored,
+                        };
+                    }
                     Focus::TabRgb => {
                         status = match key {
                             keyboard::Key::Named(
                                 keyboard::key::Named::Enter | keyboard::key::Named::Space,
                             ) => {
-                                self.set_active_tab(ActiveTab::Rgb, shell);
+                                if self.state.picker_tab == PickerTab::Gradient {
+                                    self.set_gradient_editor(GradientEditorTab::Rgba, shell);
+                                } else {
+                                    self.set_active_tab(ActiveTab::Rgb, shell);
+                                }
                                 event::Status::Captured
                             }
                             keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
@@ -1328,7 +1655,17 @@ where
                             keyboard::Key::Named(
                                 keyboard::key::Named::Enter | keyboard::key::Named::Space,
                             ) => {
-                                self.set_active_tab(ActiveTab::Hsv, shell);
+                                if self.state.picker_tab == PickerTab::Gradient {
+                                    self.set_gradient_editor(GradientEditorTab::Hsv, shell);
+                                } else {
+                                    self.set_active_tab(ActiveTab::Hsv, shell);
+                                }
+                                event::Status::Captured
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                                if self.state.picker_tab == PickerTab::Gradient {
+                                    self.state.focus = Focus::TabRect;
+                                }
                                 event::Status::Captured
                             }
                             keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
@@ -1343,9 +1680,7 @@ where
                             keyboard::Key::Named(
                                 keyboard::key::Named::Enter | keyboard::key::Named::Space,
                             ) => {
-                                self.state.apply_color(self.state.initial_color);
-                                self.state.sync_display();
-                                self.state.clear_cache();
+                                self.state.reset_to_initial();
                                 event::Status::Captured
                             }
                             _ => event::Status::Ignored,
@@ -1381,13 +1716,13 @@ where
                             keyboard::Key::Named(
                                 keyboard::key::Named::Enter | keyboard::key::Named::Space,
                             ) => {
-                                if let Some(color) = self
+                                if let Some(picked) = self
                                     .state
                                     .swatch_sets
                                     .get(self.state.active_swatch_tab)
                                     .and_then(|set| set.colors.get(idx))
                                 {
-                                    self.select_color_from_swatch(*color, shell);
+                                    self.select_picked_from_swatch(picked.clone(), shell);
                                     event::Status::Captured
                                 } else {
                                     event::Status::Ignored
@@ -1444,11 +1779,11 @@ where
                     _ => {}
                 }
 
-                // If color changed via keyboard, call on_color_change callback
-                if status == event::Status::Captured
-                    && let Some(on_color_change) = self.on_color_change
-                {
-                    shell.publish(on_color_change(self.state.color));
+                // If color changed via keyboard, call change callbacks.
+                // Tab navigation / stop selection also publishes so live
+                // previews stay in sync.
+                if status == event::Status::Captured {
+                    self.notify_changed(shell);
                 }
             }
 
@@ -1624,24 +1959,26 @@ where
         }
     }
 
-    /// Switches the top-level tab (raw color vs. library).
+    /// Switches the top-level tab (color vs. gradient vs. library).
     fn set_picker_tab(&mut self, tab: PickerTab, shell: &mut Shell<Message>) {
         if self.state.picker_tab != tab {
             self.state.picker_tab = tab;
+            if tab == PickerTab::Gradient {
+                // Load the selected stop into the shared editor.
+                self.state.select_stop(self.state.selected_stop);
+            }
             self.state.clear_cache();
             shell.invalidate_layout();
         }
     }
 
-    /// Applies a color picked from a swatch: updates the color, the hex and
-    /// value fields and publishes `on_color_change`.
-    fn select_color_from_swatch(&mut self, color: Color, shell: &mut Shell<Message>) {
-        self.state.apply_color(color);
+    /// Applies a picked value (solid or gradient) from a swatch or recent
+    /// cell and publishes change callbacks.
+    fn select_picked_from_swatch(&mut self, picked: PickedValue, shell: &mut Shell<Message>) {
+        self.state.apply_picked(picked);
         self.state.sync_display();
         self.state.clear_cache();
-        if let Some(on_color_change) = self.on_color_change {
-            shell.publish(on_color_change(color));
-        }
+        self.notify_changed(shell);
     }
 
     /// Pushes a new swatch set with the given name, selects it and closes
@@ -1792,23 +2129,24 @@ where
                 let cell_bounds = cell.bounds();
                 if cursor.is_over(cell_bounds)
                     && page_bounds.intersects(&cell_bounds)
-                    && let Some(color) = self
+                    && let Some(picked) = self
                         .state
                         .swatch_sets
                         .get(self.state.active_swatch_tab)
                         .and_then(|set| set.colors.get(i))
                 {
-                    self.select_color_from_swatch(*color, shell);
+                    self.select_picked_from_swatch(picked.clone(), shell);
                     return true;
                 }
             }
 
-            // The add-current-color button.
+            // The add-current-value button: stores the current tab's value
+            // so gradients are kept as gradients, not flattened to solid.
             if cursor.is_over(add_btn_layout.bounds()) {
-                let color = self.state.color;
+                let picked = self.state.current_picked();
                 let set_idx = self.state.active_swatch_tab;
                 if let Some(set) = self.state.swatch_sets.get_mut(set_idx) {
-                    insert_swatch(&mut set.colors, color);
+                    insert_swatch(&mut set.colors, picked);
                     self.state.clear_cache();
                     shell.invalidate_layout();
                 }
@@ -1873,7 +2211,9 @@ where
         let width = CONTENT_WIDTH;
         let spacing = CONTROLS_SPACING;
         let is_color = self.state.picker_tab == PickerTab::Color;
-        let is_library = !is_color;
+        let is_gradient = self.state.picker_tab == PickerTab::Gradient;
+        let is_library = self.state.picker_tab == PickerTab::Library;
+        let is_editor = is_color || is_gradient;
         // Inline widgets draw the top tabs in content; the floating window
         // hosts them in its draggable header instead.
         let show_top_tabs = !self.lens_in_content_draw;
@@ -1913,7 +2253,10 @@ where
         }
 
         // [2] Picker: S/V square (centered) + hue slider with eyedropper
-        // button on its right, centered as a group.
+        // button on its right (Color tab: children [square, hue,
+        // dropper]), or the gradient stop bar (Gradient tab: children
+        // [bar] with [strip, handle0, handle1]). The Gradient Rect square
+        // lives in the controls slot [4], below the editor tabs.
         {
             if is_color {
                 let square_limits = Limits::new(Size::ZERO, Size::new(SQUARE_DIM, SQUARE_DIM));
@@ -1947,6 +2290,36 @@ where
                     vec![square_node, hue_node, dropper_node],
                 );
                 push(picker_node, &mut children, &mut offset_y);
+            } else if is_gradient {
+                let section = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width,
+                    height: GRADIENT_BAR_TOTAL,
+                };
+                let strip_rect = gradient_strip_rect(section);
+                let strip = Node::with_children(strip_rect.size(), Vec::new())
+                    .move_to(strip_rect.position());
+                let mut bar_children = vec![strip];
+                for i in 0..2 {
+                    let offset = self
+                        .state
+                        .gradient
+                        .stop(i)
+                        .map_or(i as f32, |s| s.offset);
+                    let hr = gradient_handle_rect(section, offset);
+                    bar_children.push(
+                        Node::with_children(Size::new(hr.width, hr.height), Vec::new())
+                            .move_to(hr.position()),
+                    );
+                }
+                let bar_node =
+                    Node::with_children(Size::new(width, GRADIENT_BAR_TOTAL), bar_children);
+                push(
+                    Node::with_children(Size::new(width, GRADIENT_BAR_TOTAL), vec![bar_node]),
+                    &mut children,
+                    &mut offset_y,
+                );
             } else {
                 push(
                     Node::with_children(Size::new(width, 0.0), Vec::new()),
@@ -1956,9 +2329,9 @@ where
             }
         }
 
-        // [2] RGB/HSV sub tab bar (Color only).
+        // [2] RGB/HSV sub tab bar (Color + Gradient).
         {
-            let h = if is_color { TAB_BAR_HEIGHT } else { 0.0 };
+            let h = if is_editor { TAB_BAR_HEIGHT } else { 0.0 };
             let node = if h > 0.0 {
                 Row::<(), Theme, Renderer>::new()
                     .width(Length::Fill)
@@ -1970,9 +2343,53 @@ where
             push(node, &mut children, &mut offset_y);
         }
 
-        // [3] Slider controls (Color only).
+        // [4] Slider controls (Color always; Gradient for Hsv/Rgba) or
+        // the S/V square + hue slider with eyedropper (Gradient + Rect,
+        // below the editor tabs; children [square, hue, dropper]).
         {
-            if is_color {
+            let show_sliders = is_color
+                || (is_gradient && self.state.gradient_editor != GradientEditorTab::Rect);
+            let show_gradient_square =
+                is_gradient && self.state.gradient_editor == GradientEditorTab::Rect;
+            if show_gradient_square {
+                let square_limits = Limits::new(Size::ZERO, Size::new(SQUARE_DIM, SQUARE_DIM));
+                let square_node = Row::<(), Theme, Renderer>::new()
+                    .width(Length::Fixed(SQUARE_DIM))
+                    .height(Length::Fixed(SQUARE_DIM))
+                    .layout(self.tree, renderer, &square_limits)
+                    .move_to(Point::new((width - SQUARE_DIM) / 2.0, 0.0));
+                let group_width = SQUARE_DIM + HUE_DROPPER_GAP + DROPPER_SIZE;
+                let group_x = (width - group_width) / 2.0;
+                let row_y = SQUARE_DIM + 8.0;
+                let row_height = HUE_SLIDER_HEIGHT.max(DROPPER_SIZE);
+                let hue_node = Node::with_children(
+                    Size::new(SQUARE_DIM, HUE_SLIDER_HEIGHT),
+                    Vec::new(),
+                )
+                .move_to(Point::new(group_x, row_y + (row_height - HUE_SLIDER_HEIGHT) / 2.0));
+                // NOTE: the button is always really laid out so the node
+                // keeps valid button children: `Button::update` unwraps its
+                // content layout.
+                let dropper_node = self
+                    .dropper_button
+                    .layout(
+                        &mut self.tree.children[0],
+                        renderer,
+                        &Limits::new(Size::ZERO, Size::new(DROPPER_SIZE, DROPPER_SIZE)),
+                    )
+                    .move_to(Point::new(
+                        group_x + SQUARE_DIM + HUE_DROPPER_GAP,
+                        row_y + (row_height - DROPPER_SIZE) / 2.0,
+                    ));
+                push(
+                    Node::with_children(
+                        Size::new(width, SQUARE_DIM + 8.0 + row_height),
+                        vec![square_node, hue_node, dropper_node],
+                    ),
+                    &mut children,
+                    &mut offset_y,
+                );
+            } else if show_sliders {
                 let controls_height = 4.0 * SLIDER_HEIGHT + 3.0 * ROW_SPACING;
                 let groove_width = width - LABEL_WIDTH - VALUE_WIDTH;
                 let mut controls_children = Vec::new();
@@ -1984,10 +2401,19 @@ where
                     let groove_node =
                         Node::with_children(Size::new(groove_width, SLIDER_HEIGHT), Vec::new())
                             .move_to(Point::new(LABEL_WIDTH, y));
-                    let value_input_index = match (self.state.active_tab, row) {
-                        (ActiveTab::Rgb, i) => Some(i),
-                        (ActiveTab::Hsv, 3) => Some(3),
-                        (ActiveTab::Hsv, i) => Some(4 + i),
+                    let value_input_index = if is_gradient {
+                        match (self.state.gradient_editor, row) {
+                            (GradientEditorTab::Rgba, i) => Some(i),
+                            (GradientEditorTab::Hsv, 3) => Some(3),
+                            (GradientEditorTab::Hsv, i) => Some(4 + i),
+                            _ => None,
+                        }
+                    } else {
+                        match (self.state.active_tab, row) {
+                            (ActiveTab::Rgb, i) => Some(i),
+                            (ActiveTab::Hsv, 3) => Some(3),
+                            (ActiveTab::Hsv, i) => Some(4 + i),
+                        }
                     };
                     let value_child = if let Some(value_input_index) = value_input_index {
                         let input_tree =
@@ -2034,9 +2460,9 @@ where
             }
         }
 
-        // [4] Hex container (Color only).
+        // [4] Hex container (Color + Gradient for the selected stop).
         {
-            if is_color {
+            if is_editor {
                 let hex_input_tree =
                     if let Some(child_tree) = self.tree.children.get_mut(HEX_INPUT_INDEX) {
                         child_tree.diff(
@@ -2391,14 +2817,25 @@ where
         let reset_button_layout = buttons_layout
             .next()
             .expect("widget: Layout should have reset button");
-        // Eyedropper lives beside the hue slider: third child of the picker
-        // (Color tab only; absent in the Library tab).
-        let dropper_button_layout_opt = picker_layout.children().nth(2);
+        let is_color = self.state.picker_tab == PickerTab::Color;
+        let is_gradient = self.state.picker_tab == PickerTab::Gradient;
+        let is_library = self.state.picker_tab == PickerTab::Library;
+        let is_editor = is_color || is_gradient;
+        let show_square =
+            is_color || (is_gradient && self.state.gradient_editor == GradientEditorTab::Rect);
+        // Eyedropper lives beside the hue slider: third child of the
+        // picker (Color) or of the controls below the editor tabs
+        // (Gradient + Rect). Absent in the Library tab.
+        let dropper_button_layout_opt = if is_color {
+            picker_layout.children().nth(2)
+        } else if show_square {
+            controls_layout.children().nth(2)
+        } else {
+            None
+        };
         let submit_button_layout = buttons_layout
             .next()
             .expect("widget: Layout should have submit button");
-        let is_color = self.state.picker_tab == PickerTab::Color;
-        let is_library = !is_color;
 
         if event::Status::Captured == self.on_event_keyboard(event, shell) {
             self.clear_cache();
@@ -2419,15 +2856,21 @@ where
                     let bounds = top_tabs_layout.bounds();
                     if bounds.height > 0.0 {
                         let gap = 6.0;
-                        let w = (bounds.width - gap) / 2.0;
+                        let w = (bounds.width - 2.0 * gap) / 3.0;
                         self.state.top_color_hovered = cursor.is_over(Rectangle {
                             x: bounds.x,
                             y: bounds.y,
                             width: w,
                             height: bounds.height,
                         });
-                        self.state.top_library_hovered = cursor.is_over(Rectangle {
+                        self.state.top_gradient_hovered = cursor.is_over(Rectangle {
                             x: bounds.x + w + gap,
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                        self.state.top_library_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x + 2.0 * (w + gap),
                             y: bounds.y,
                             width: w,
                             height: bounds.height,
@@ -2442,21 +2885,34 @@ where
                 let bounds = top_tabs_layout.bounds();
                 if bounds.height > 0.0 {
                     let gap = 6.0;
-                    let w = (bounds.width - gap) / 2.0;
+                    let w = (bounds.width - 2.0 * gap) / 3.0;
                     let color_tab = Rectangle {
                         x: bounds.x,
                         y: bounds.y,
                         width: w,
                         height: bounds.height,
                     };
-                    let lib_tab = Rectangle {
+                    let gradient_tab = Rectangle {
                         x: bounds.x + w + gap,
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    let lib_tab = Rectangle {
+                        x: bounds.x + 2.0 * (w + gap),
                         y: bounds.y,
                         width: w,
                         height: bounds.height,
                     };
                     if cursor.is_over(color_tab) && self.state.picker_tab != PickerTab::Color {
                         self.set_picker_tab(PickerTab::Color, shell);
+                        shell.capture_event();
+                        shell.request_redraw();
+                        return;
+                    } else if cursor.is_over(gradient_tab)
+                        && self.state.picker_tab != PickerTab::Gradient
+                    {
+                        self.set_picker_tab(PickerTab::Gradient, shell);
                         shell.capture_event();
                         shell.request_redraw();
                         return;
@@ -2477,7 +2933,7 @@ where
         // `on_input` closure and pushes a fake message; a non-empty message
         // list means that this input's value changed (submit_button pattern).
         let mut hex_changed = false;
-        if is_color
+        if is_editor
             && let Some(tree_child) = self.tree.children.get_mut(HEX_INPUT_INDEX)
             && let Some(input_layout) = hex_input_layout(hex_layout)
         {
@@ -2506,6 +2962,8 @@ where
         let mut value_changed_indices = Vec::new();
         for i in if is_color {
             self.active_tab_channels()
+        } else if is_gradient {
+            self.state.gradient_channels()
         } else {
             Vec::new()
         } {
@@ -2548,12 +3006,19 @@ where
             color_changed |= self.on_value_input(i);
         }
 
-        if color_changed
-            && let Some(on_color_change) = self.on_color_change
-        {
-            shell.publish(on_color_change(self.state.color));
+        if color_changed {
+            self.notify_changed(shell);
         }
 
+        // Channels of the current editor (Color: active tab; Gradient:
+        // gradient editor).
+        let editor_channels = if is_gradient {
+            self.state.gradient_channels()
+        } else if is_color {
+            self.active_tab_channels()
+        } else {
+            Vec::new()
+        };
         if hex_changed || self.state.hex_focused || self.state.value_focus.is_some() {
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
@@ -2561,27 +3026,20 @@ where
                     // Clicking outside all TextInputs blurs them.
                     let over_hex = hex_input_layout(hex_layout)
                         .is_some_and(|l| cursor.position_in(l.bounds()).is_some());
-                    let over_value = self
-                        .active_tab_channels()
-                        .iter()
-                        .any(|i| {
-                            value_cell_layout(controls_layout, self, *i)
-                                .is_some_and(|l| cursor.position_in(l.bounds()).is_some())
-                        });
+                    let over_value = editor_channels.iter().any(|i| {
+                        value_cell_layout(controls_layout, self, *i)
+                            .is_some_and(|l| cursor.position_in(l.bounds()).is_some())
+                    });
                     if !over_hex && !over_value {
                         self.unfocus_all_text_inputs();
                         self.state.hex_focused = false;
                         self.state.value_focus = None;
                     } else if over_hex {
                         self.state.focus = Focus::Hex;
-                    } else if let Some(i) = self
-                        .active_tab_channels()
-                        .iter()
-                        .find(|i| {
-                            value_cell_layout(controls_layout, self, **i)
-                                .is_some_and(|l| cursor.position_in(l.bounds()).is_some())
-                        })
-                    {
+                    } else if let Some(i) = editor_channels.iter().find(|i| {
+                        value_cell_layout(controls_layout, self, **i)
+                            .is_some_and(|l| cursor.position_in(l.bounds()).is_some())
+                    }) {
                         self.state.value_focus = Some(*i);
                         self.state.focus = channel_focus(*i);
                     }
@@ -2597,8 +3055,9 @@ where
             return;
         }
 
-        // Clicking a tab bar shows that tab.
-        if is_color {
+        // Clicking a tab bar shows that tab: [HSV | RGB(A)] in Color,
+        // [Rect | HSV | RGBA] in Gradient.
+        if is_editor {
             match event {
                 Event::Mouse(
                     mouse::Event::CursorMoved { .. }
@@ -2607,6 +3066,90 @@ where
                 )
                 | Event::Touch(touch::Event::FingerMoved { .. }) => {
                     let bounds = tab_bar_layout.bounds();
+                    if is_gradient {
+                        let gap = 2.0;
+                        let w = (bounds.width - 2.0 * gap) / 3.0;
+                        self.state.tab_rect_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                        self.state.tab_hsv_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x + w + gap,
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                        self.state.tab_rgb_hovered = cursor.is_over(Rectangle {
+                            x: bounds.x + 2.0 * (w + gap),
+                            y: bounds.y,
+                            width: w,
+                            height: bounds.height,
+                        });
+                    } else {
+                        let gap = 2.0;
+                        let half = (bounds.width - gap) / 2.0;
+                        let hsv_tab_bounds = Rectangle {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: half,
+                            height: bounds.height,
+                        };
+                        let rgb_tab_bounds = Rectangle {
+                            x: bounds.x + half + gap,
+                            y: bounds.y,
+                            width: half,
+                            height: bounds.height,
+                        };
+                        self.state.tab_rgb_hovered = cursor.is_over(rgb_tab_bounds);
+                        self.state.tab_hsv_hovered = cursor.is_over(hsv_tab_bounds);
+                    }
+                }
+                _ => {}
+            }
+            if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) = event
+            {
+                let bounds = tab_bar_layout.bounds();
+                if is_gradient {
+                    let gap = 2.0;
+                    let w = (bounds.width - 2.0 * gap) / 3.0;
+                    let rect_tab = Rectangle {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    let hsv_tab = Rectangle {
+                        x: bounds.x + w + gap,
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    let rgba_tab = Rectangle {
+                        x: bounds.x + 2.0 * (w + gap),
+                        y: bounds.y,
+                        width: w,
+                        height: bounds.height,
+                    };
+                    if cursor.is_over(rect_tab)
+                        && self.state.gradient_editor != GradientEditorTab::Rect
+                    {
+                        self.set_gradient_editor(GradientEditorTab::Rect, shell);
+                        captured = true;
+                    } else if cursor.is_over(hsv_tab)
+                        && self.state.gradient_editor != GradientEditorTab::Hsv
+                    {
+                        self.set_gradient_editor(GradientEditorTab::Hsv, shell);
+                        captured = true;
+                    } else if cursor.is_over(rgba_tab)
+                        && self.state.gradient_editor != GradientEditorTab::Rgba
+                    {
+                        self.set_gradient_editor(GradientEditorTab::Rgba, shell);
+                        captured = true;
+                    }
+                } else {
                     let gap = 2.0;
                     let half = (bounds.width - gap) / 2.0;
                     let hsv_tab_bounds = Rectangle {
@@ -2621,49 +3164,44 @@ where
                         width: half,
                         height: bounds.height,
                     };
-                    self.state.tab_rgb_hovered = cursor.is_over(rgb_tab_bounds);
-                    self.state.tab_hsv_hovered = cursor.is_over(hsv_tab_bounds);
-                }
-                _ => {}
-            }
-            if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) = event
-            {
-                let bounds = tab_bar_layout.bounds();
-                let gap = 2.0;
-                let half = (bounds.width - gap) / 2.0;
-                let hsv_tab_bounds = Rectangle {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: half,
-                    height: bounds.height,
-                };
-                let rgb_tab_bounds = Rectangle {
-                    x: bounds.x + half + gap,
-                    y: bounds.y,
-                    width: half,
-                    height: bounds.height,
-                };
-                if cursor.is_over(rgb_tab_bounds) && self.state.active_tab != ActiveTab::Rgb {
-                    self.set_active_tab(ActiveTab::Rgb, shell);
-                    captured = true;
-                } else if cursor.is_over(hsv_tab_bounds)
-                    && self.state.active_tab != ActiveTab::Hsv
-                {
-                    self.set_active_tab(ActiveTab::Hsv, shell);
-                    captured = true;
+                    if cursor.is_over(rgb_tab_bounds) && self.state.active_tab != ActiveTab::Rgb {
+                        self.set_active_tab(ActiveTab::Rgb, shell);
+                        captured = true;
+                    } else if cursor.is_over(hsv_tab_bounds)
+                        && self.state.active_tab != ActiveTab::Hsv
+                    {
+                        self.set_active_tab(ActiveTab::Hsv, shell);
+                        captured = true;
+                    }
                 }
             }
         }
 
-        if is_color
+        // Gradient stop bar: select + drag stops (Gradient tab only).
+        if is_gradient
             && event::Status::Captured
-                == self.on_event_hsv_color(event, picker_layout, cursor, shell)
+                == self.on_event_gradient_bar(event, picker_layout, cursor, shell)
         {
             captured = true;
         }
 
-        if is_color
+        // The square lives in the picker (Color) or in the controls
+        // below the editor tabs (Gradient + Rect).
+        let square_layout = if is_gradient {
+            controls_layout
+        } else {
+            picker_layout
+        };
+        if show_square
+            && event::Status::Captured
+                == self.on_event_hsv_color(event, square_layout, cursor, shell)
+        {
+            captured = true;
+        }
+
+        let show_slider_events = is_color
+            || (is_gradient && self.state.gradient_editor != GradientEditorTab::Rect);
+        if show_slider_events
             && event::Status::Captured
                 == self.on_event_sliders(event, controls_layout, cursor, shell)
         {
@@ -2754,9 +3292,9 @@ where
                 let cell_bounds = cell.bounds();
                 if cursor.is_over(cell_bounds)
                     && viewport.intersects(&cell_bounds)
-                    && let Some(color) = self.state.recent_colors.get(i)
+                    && let Some(picked) = self.state.recent_colors.get(i).cloned()
                 {
-                    self.select_color_from_swatch(*color, shell);
+                    self.select_picked_from_swatch(picked, shell);
                     captured = true;
                     break;
                 }
@@ -2770,9 +3308,10 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                if dropper_button_layout_opt
-                    .as_ref()
-                    .is_some_and(|l| cursor.is_over(l.bounds()))
+                if show_square
+                    && dropper_button_layout_opt
+                        .as_ref()
+                        .is_some_and(|l| cursor.is_over(l.bounds()))
                 {
                     self.state.dropper_pressed = true;
                 }
@@ -2791,12 +3330,8 @@ where
                 // initial one (Qt behavior: the dialog stays open).
                 if self.state.reset_pressed && cursor.is_over(reset_button_layout.bounds()) {
                     self.state.reset_pressed = false;
-                    self.state.apply_color(self.state.initial_color);
-                    self.state.sync_display();
-                    self.state.clear_cache();
-                    if let Some(on_color_change) = self.on_color_change {
-                        shell.publish(on_color_change(self.state.color));
-                    }
+                    self.state.reset_to_initial();
+                    self.notify_changed(shell);
                 }
                 self.state.reset_pressed = false;
             }
@@ -2806,8 +3341,8 @@ where
         // The eyedropper button publishes a fake message (submit_button
         // pattern); a non-empty list means it was pressed and the capture
         // round-trip should start. It lives beside the hue slider, so it
-        // only exists in the Color tab.
-        if let Some(dropper_button_layout) = dropper_button_layout_opt {
+        // is only interactive when the square is shown.
+        if show_square && let Some(dropper_button_layout) = dropper_button_layout_opt {
             let mut dropper_messages: Vec<Message> = Vec::new();
             self.dropper_button.update(
                 &mut self.tree.children[0],
@@ -2838,9 +3373,35 @@ where
         );
 
         if !fake_messages.is_empty() {
-            push_recent(&mut self.state.recent_colors, self.state.color);
+            let picked = self.state.current_picked();
+            push_recent(&mut self.state.recent_colors, picked.clone());
+            // Also mirror the submitted value into the active swatch set so
+            // the Library stays in sync with what was picked.
+            if let Some(set) = self
+                .state
+                .swatch_sets
+                .get_mut(self.state.active_swatch_tab)
+            {
+                insert_swatch(&mut set.colors, picked);
+            }
             self.state.clear_cache();
-            shell.publish((self.on_submit)(self.state.color));
+            if let Some(on_pick_submit) = self.on_pick_submit {
+                shell.publish(on_pick_submit(self.state.current_picked()));
+            }
+            if self.state.picker_tab == PickerTab::Gradient {
+                if let Some(on_gradient_submit) = self.on_gradient_submit {
+                    shell.publish(on_gradient_submit(self.state.gradient.clone()));
+                } else if self.on_pick_submit.is_none() {
+                    // Legacy compat only: the app knows solids alone, so the
+                    // best we can do is the selected stop's color. When a
+                    // unified or gradient callback is set it already carried
+                    // the gradient above; publishing the solid here as well
+                    // would overwrite it with a stale color.
+                    shell.publish((self.on_submit)(self.state.color));
+                }
+            } else {
+                shell.publish((self.on_submit)(self.state.color));
+            }
             shell.capture_event();
             shell.request_redraw();
         }
@@ -2908,9 +3469,7 @@ where
             self.state.apply_color(color);
             self.state.sync_display();
             self.state.clear_cache();
-            if let Some(on_color_change) = self.on_color_change {
-                shell.publish(on_color_change(color));
-            }
+            self.notify_changed(shell);
         }
 
         self.exit_dropper();
@@ -3005,7 +3564,11 @@ where
         let mut children = layout.children();
         let mut interaction = mouse::Interaction::default();
         let is_color = self.state.picker_tab == PickerTab::Color;
-        let is_library = !is_color;
+        let is_gradient = self.state.picker_tab == PickerTab::Gradient;
+        let is_library = self.state.picker_tab == PickerTab::Library;
+        let is_editor = is_color || is_gradient;
+        let show_sliders = is_color
+            || (is_gradient && self.state.gradient_editor != GradientEditorTab::Rect);
 
         let top_tabs_layout = children.next().expect("Graphics: Layout should have top tabs");
         if top_tabs_layout.bounds().height > 0.0 && cursor.is_over(top_tabs_layout.bounds()) {
@@ -3013,22 +3576,61 @@ where
         }
         let _preview_layout = children.next();
         let picker_layout = children.next().expect("Graphics: Layout should have picker");
-        if is_color {
-            let mut picker_children = picker_layout.children();
-            if let Some(square) = picker_children.next()
+        let _tab_bar_layout = children.next();
+        let controls_layout = children.next().expect("Graphics: Layout should have controls");
+        // The square lives in the picker (Color) or in the controls below
+        // the editor tabs (Gradient + Rect).
+        let square_layout_opt = if is_color {
+            Some(picker_layout)
+        } else if is_gradient && self.state.gradient_editor == GradientEditorTab::Rect {
+            Some(controls_layout)
+        } else {
+            None
+        };
+        if let Some(square_layout) = square_layout_opt {
+            let mut square_children = square_layout.children();
+            if let Some(square) = square_children.next()
                 && cursor.is_over(square.bounds())
             {
                 interaction = interaction.max(mouse::Interaction::Pointer);
             }
-            if let Some(hue) = picker_children.next()
+            if let Some(hue) = square_children.next()
                 && cursor.is_over(hue.bounds())
             {
                 interaction = interaction.max(mouse::Interaction::ResizingHorizontally);
             }
         }
-        let _tab_bar_layout = children.next();
-        let controls_layout = children.next().expect("Graphics: Layout should have controls");
-        if is_color {
+        if is_gradient {
+            // Gradient pins (bodies + pointer nubs) + strip.
+            let mut picker_children = picker_layout.children();
+            if let Some(bar) = picker_children.next() {
+                let mut bar_children = bar.children();
+                if let Some(strip_layout) = bar_children.next() {
+                    let strip = strip_layout.bounds();
+                    if cursor.is_over(strip) {
+                        interaction =
+                            interaction.max(mouse::Interaction::ResizingHorizontally);
+                    }
+                    if strip.width > 0.0 {
+                        let section = bar.bounds();
+                        for i in 0..2 {
+                            let offset = self
+                                .state
+                                .gradient
+                                .stop(i)
+                                .map_or(i as f32, |s| s.offset);
+                            if cursor.is_over(gradient_handle_rect(section, offset))
+                                || cursor.is_over(gradient_pointer_rect(section, offset))
+                            {
+                                interaction = interaction.max(mouse::Interaction::Pointer);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if show_sliders {
             for row_layout in controls_layout.children() {
                 let mut row_children = row_layout.children();
                 let _ = row_children.next();
@@ -3040,7 +3642,7 @@ where
             }
         }
         let hex_layout = children.next().expect("Graphics: Layout should have hex");
-        if is_color
+        if is_editor
             && let Some(tree_child) = self.tree.children.get(HEX_INPUT_INDEX)
             && let Some(input_layout) = hex_input_layout(hex_layout)
         {
@@ -3052,8 +3654,13 @@ where
                 renderer,
             ));
         }
-        if is_color {
-            for i in self.active_tab_channels() {
+        if is_editor {
+            let channels = if is_gradient {
+                self.state.gradient_channels()
+            } else {
+                self.active_tab_channels()
+            };
+            for i in channels {
                 if self.tree.children.len() <= VALUE_INPUTS_INDEX + i {
                     continue;
                 }
@@ -3115,8 +3722,10 @@ where
                 }
             }
         }
-        // Eyedropper beside the hue slider (Color tab only).
-        if is_color && let Some(dropper_layout) = picker_layout.children().nth(2) {
+        // Eyedropper beside the hue slider (Color + Gradient/Rect).
+        if let Some(square_layout) = square_layout_opt
+            && let Some(dropper_layout) = square_layout.children().nth(2)
+        {
             interaction = interaction.max(self.dropper_button.mouse_interaction(
                 &self.tree.children[0],
                 dropper_layout,
@@ -3147,9 +3756,18 @@ where
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        // Picker is child [2]; its third child is the eyedropper beside hue.
-        if let Some(picker_layout) = layout.children().nth(2)
-            && let Some(dropper_layout) = picker_layout.children().nth(2)
+        // The square container is child [2] (Color picker) or child [4]
+        // (Gradient + Rect controls); its third child is the eyedropper.
+        let square_idx =
+            if self.state.picker_tab == PickerTab::Gradient
+                && self.state.gradient_editor == GradientEditorTab::Rect
+            {
+                4
+            } else {
+                2
+            };
+        if let Some(square_container) = layout.children().nth(square_idx)
+            && let Some(dropper_layout) = square_container.children().nth(2)
         {
             Widget::operate(
                 &mut self.dropper_button,
@@ -3232,7 +3850,11 @@ where
         // [5]hex [6]swlabel [7]swtabs [8]swpage [9]add [10]div [11]reclabel
         // [12]recgrid [13]buttons
         let is_color = self.state.picker_tab == PickerTab::Color;
-        let is_library = !is_color;
+        let is_gradient = self.state.picker_tab == PickerTab::Gradient;
+        let is_library = self.state.picker_tab == PickerTab::Library;
+        let is_editor = is_color || is_gradient;
+        let show_sliders = is_color
+            || (is_gradient && self.state.gradient_editor != GradientEditorTab::Rect);
         let top_tabs_layout = children.next().expect("Graphics: Layout should have top tabs");
         if top_tabs_layout.bounds().height > 0.0 {
             draw_top_tabs(renderer, self, top_tabs_layout, cursor, &style_sheet);
@@ -3240,10 +3862,27 @@ where
         let preview_layout = children.next().expect("Graphics: Layout should have preview");
         preview_placeholder(renderer, self, preview_layout, cursor, &style_sheet);
         let picker_layout = children.next().expect("Graphics: Layout should have picker");
-        if is_color {
-            hsv_color(renderer, self, picker_layout, cursor, &style_sheet);
+        if is_gradient {
+            draw_gradient_bar(renderer, self, picker_layout, cursor, &style_sheet);
+        }
+        let tab_bar_layout = children.next().expect("Graphics: Layout should have tab bar");
+        if is_editor {
+            tab_bar_placeholder(renderer, self, tab_bar_layout, cursor, &style_sheet);
+        }
+        let controls_layout = children.next().expect("Graphics: Layout should have controls");
+        // The square lives in the picker (Color) or in the controls below
+        // the editor tabs (Gradient + Rect).
+        let square_layout_opt = if is_color {
+            Some(picker_layout)
+        } else if is_gradient && self.state.gradient_editor == GradientEditorTab::Rect {
+            Some(controls_layout)
+        } else {
+            None
+        };
+        if let Some(square_layout) = square_layout_opt {
+            hsv_color(renderer, self, square_layout, cursor, &style_sheet);
             // Eyedropper icon button on the right of the hue slider.
-            if let Some(dropper_layout) = picker_layout.children().nth(2) {
+            if let Some(dropper_layout) = square_layout.children().nth(2) {
                 let disabled = self.dropper_buffer.is_none();
                 draw_icon_overlay_button(
                     renderer,
@@ -3263,12 +3902,7 @@ where
                 );
             }
         }
-        let tab_bar_layout = children.next().expect("Graphics: Layout should have tab bar");
-        if is_color {
-            tab_bar_placeholder(renderer, self, tab_bar_layout, cursor, &style_sheet);
-        }
-        let controls_layout = children.next().expect("Graphics: Layout should have controls");
-        if is_color {
+        if show_sliders {
             slider_rows(
                 renderer,
                 self,
@@ -3281,7 +3915,7 @@ where
             );
         }
         let hex_layout = children.next().expect("Graphics: Layout should have hex");
-        if is_color {
+        if is_editor {
             hex_input(renderer, theme, self, hex_layout, cursor, &style_sheet);
         }
         let swatch_label_layout = children.next();
@@ -3555,6 +4189,10 @@ where
         on_cancel: Message,
         on_submit: &'a dyn Fn(Color) -> Message,
         on_color_change: Option<&'a dyn Fn(Color) -> Message>,
+        on_gradient_submit: Option<&'a dyn Fn(Gradient) -> Message>,
+        on_gradient_change: Option<&'a dyn Fn(Gradient) -> Message>,
+        on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
+        on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         position: Option<OverlayPosition>,
@@ -3575,6 +4213,10 @@ where
                 on_cancel.clone(),
                 on_submit,
                 on_color_change,
+                on_gradient_submit,
+                on_gradient_change,
+                on_pick,
+                on_pick_submit,
                 dropper_buffer,
                 on_dropper_capture,
                 true,
@@ -3705,7 +4347,7 @@ where
             Size::new(dialog_bounds.width, HEADER_HEIGHT),
         );
         let close_rect = close_button_rect(header_rect);
-        let (top_color_rect, top_library_rect) = top_tab_rects(header_rect);
+        let (top_color_rect, top_gradient_rect, top_library_rect) = top_tab_rects(header_rect);
 
         let on_close = self.on_close.clone();
 
@@ -3719,6 +4361,7 @@ where
             ) | Event::Touch(touch::Event::FingerMoved { .. })
         ) {
             self.content.state.top_color_hovered = cursor.is_over(top_color_rect);
+            self.content.state.top_gradient_hovered = cursor.is_over(top_gradient_rect);
             self.content.state.top_library_hovered = cursor.is_over(top_library_rect);
         }
 
@@ -3734,6 +4377,15 @@ where
                     if self.content.state.picker_tab != PickerTab::Color {
                         self.content.state.picker_tab = PickerTab::Color;
                         self.content.state.focus = Focus::TopColor;
+                        shell.invalidate_layout();
+                        shell.request_redraw();
+                    }
+                    shell.capture_event();
+                } else if cursor.is_over(top_gradient_rect) {
+                    if self.content.state.picker_tab != PickerTab::Gradient {
+                        self.content.state.picker_tab = PickerTab::Gradient;
+                        self.content.state.focus = Focus::TopGradient;
+                        self.content.state.select_stop(self.content.state.selected_stop);
                         shell.invalidate_layout();
                         shell.request_redraw();
                     }
@@ -3840,10 +4492,11 @@ where
             Size::new(layout.bounds().width, HEADER_HEIGHT),
         );
         let close_rect = close_button_rect(header_rect);
-        let (top_color_rect, top_library_rect) = top_tab_rects(header_rect);
+        let (top_color_rect, top_gradient_rect, top_library_rect) = top_tab_rects(header_rect);
 
         if cursor.is_over(close_rect)
             || cursor.is_over(top_color_rect)
+            || cursor.is_over(top_gradient_rect)
             || cursor.is_over(top_library_rect)
         {
             interaction = interaction.max(mouse::Interaction::Pointer);
@@ -3926,6 +4579,7 @@ where
             header_bounds,
             self.content.state.picker_tab,
             self.content.state.top_color_hovered,
+            self.content.state.top_gradient_hovered,
             self.content.state.top_library_hovered,
             cursor,
             &active,
@@ -4442,13 +5096,19 @@ fn draw_top_tabs<Message, Theme>(
     let active_style = style_sheet[&StyleState::Active];
     let bounds = layout.bounds();
     let gap = 6.0;
-    let w = (bounds.width - gap) / 2.0;
+    let w = (bounds.width - 2.0 * gap) / 3.0;
     let tabs = [
         ("Color", PickerTab::Color, bounds.x, color_picker.state.top_color_hovered),
         (
+            "Gradient",
+            PickerTab::Gradient,
+            bounds.x + w + gap,
+            color_picker.state.top_gradient_hovered,
+        ),
+        (
             "Library",
             PickerTab::Library,
-            bounds.x + w + gap,
+            bounds.x + 2.0 * (w + gap),
             color_picker.state.top_library_hovered,
         ),
     ];
@@ -4501,12 +5161,14 @@ fn draw_top_tabs<Message, Theme>(
         );
     }
     let focus_target = match color_picker.state.focus {
-        Focus::TopColor | Focus::TopLibrary => Some(color_picker.state.focus),
+        Focus::TopColor | Focus::TopGradient | Focus::TopLibrary => {
+            Some(color_picker.state.focus)
+        }
         _ => None,
     };
     if let Some(target) = focus_target {
         let gap = 6.0;
-        let w = (bounds.width - gap) / 2.0;
+        let w = (bounds.width - 2.0 * gap) / 3.0;
         let fb = if target == Focus::TopColor {
             Rectangle {
                 x: bounds.x,
@@ -4514,9 +5176,16 @@ fn draw_top_tabs<Message, Theme>(
                 width: w,
                 height: bounds.height,
             }
-        } else {
+        } else if target == Focus::TopGradient {
             Rectangle {
                 x: bounds.x + w + gap,
+                y: bounds.y,
+                width: w,
+                height: bounds.height,
+            }
+        } else {
+            Rectangle {
+                x: bounds.x + 2.0 * (w + gap),
                 y: bounds.y,
                 width: w,
                 height: bounds.height,
@@ -4532,14 +5201,21 @@ fn draw_header_tabs(
     header: Rectangle,
     picker_tab: PickerTab,
     top_color_hovered: bool,
+    top_gradient_hovered: bool,
     top_library_hovered: bool,
     cursor: Cursor,
     style: &Style,
     selected_tab_bg: Background,
 ) {
-    let (color_rect, library_rect) = top_tab_rects(header);
+    let (color_rect, gradient_rect, library_rect) = top_tab_rects(header);
     for (rect, label, selected, hovered) in [
         (color_rect, "Color", picker_tab == PickerTab::Color, top_color_hovered),
+        (
+            gradient_rect,
+            "Gradient",
+            picker_tab == PickerTab::Gradient,
+            top_gradient_hovered,
+        ),
         (
             library_rect,
             "Library",
@@ -4664,7 +5340,256 @@ fn block1<Message, Theme>(
     // ----------- Block 1 end ------------------
 }
 
-/// Draws a placeholder for the HSV/RGB(A) tab bar.
+/// Draws one editor sub-tab cell.
+fn draw_editor_tab(
+    renderer: &mut Renderer,
+    tab_bounds: Rectangle,
+    label: &str,
+    background: Background,
+    text_color: Color,
+    active_style: &Style,
+) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: tab_bounds,
+            border: Border {
+                radius: Radius::default().top(5.0),
+                width: 1.0,
+                color: active_style.tab_border_color,
+            },
+            ..renderer::Quad::default()
+        },
+        background,
+    );
+    renderer.fill_text(
+        Text {
+            content: label.to_owned(),
+            bounds: Size::new(tab_bounds.width, tab_bounds.height),
+            size: renderer.default_size(),
+            font: renderer.default_font(),
+            align_x: text::Alignment::Center,
+            align_y: Vertical::Center,
+            line_height: text::LineHeight::Relative(1.3),
+            shaping: text::Shaping::Basic,
+            wrapping: text::Wrapping::None,
+        },
+        Point::new(tab_bounds.center_x(), tab_bounds.center_y()),
+        text_color,
+        tab_bounds,
+    );
+}
+
+/// Draws the keyboard focus border of the gradient editor tabs.
+fn draw_gradient_editor_focus<Message, Theme>(
+    renderer: &mut Renderer,
+    color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
+    bounds: Rectangle,
+    style_sheet: &HashMap<StyleState, Style>,
+) where
+    Message: Clone,
+    Theme: style::Catalog + iced::widget::button::Catalog + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    let gap = 2.0;
+    let w = (bounds.width - 2.0 * gap) / 3.0;
+    let target = match color_picker.state.focus {
+        Focus::TabRect | Focus::TabHsv | Focus::TabRgb => Some(color_picker.state.focus),
+        _ => None,
+    };
+    if let Some(target) = target {
+        let x = match target {
+            Focus::TabRect => bounds.x,
+            Focus::TabHsv => bounds.x + w + gap,
+            _ => bounds.x + 2.0 * (w + gap),
+        };
+        draw_focus_border(
+            renderer,
+            color_picker,
+            Rectangle {
+                x,
+                y: bounds.y,
+                width: w,
+                height: bounds.height,
+            },
+            target,
+            style_sheet,
+        );
+    }
+}
+
+/// Draws the gradient stop bar (strip + two stop handles). The bar
+/// container is the gradient picker node's only child.
+fn draw_gradient_bar<Message, Theme>(
+    renderer: &mut Renderer,
+    color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
+    layout: Layout<'_>,
+    cursor: Cursor,
+    style_sheet: &HashMap<StyleState, Style>,
+) where
+    Message: Clone,
+    Theme: style::Catalog + iced::widget::button::Catalog + iced::widget::text::Catalog
+        + iced::widget::text_input::Catalog,
+{
+    let mut picker_children = layout.children();
+    let Some(bar) = picker_children.next() else {
+        return;
+    };
+    let mut bar_children = bar.children();
+    let Some(strip_layout) = bar_children.next() else {
+        return;
+    };
+    let strip = strip_layout.bounds();
+    if strip.width <= 0.0 || strip.height <= 0.0 {
+        return;
+    }
+    let active_style = &style_sheet[&StyleState::Active];
+    // Checkerboard underlay for alpha, then the interpolated strip.
+    draw_checkerboard(
+        renderer,
+        strip,
+        6.0,
+        active_style.checker_color_1,
+        active_style.checker_color_2,
+    );
+    let steps = strip.width as i32;
+    for x in 0..steps {
+        let t = if strip.width > 1.0 {
+            x as f32 / (strip.width - 1.0)
+        } else {
+            0.0
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(
+                    Point::new(strip.x + x as f32, strip.y),
+                    Size::new(1.0, strip.height),
+                ),
+                ..renderer::Quad::default()
+            },
+            color_picker.state.gradient.sample(t),
+        );
+    }
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: strip,
+            border: Border {
+                radius: active_style.bar_border_radius.into(),
+                width: active_style.bar_border_width,
+                color: active_style.slider_groove_border_color,
+            },
+            ..renderer::Quad::default()
+        },
+        Color::TRANSPARENT,
+    );
+    // Figma-style stop pins riding on top of the strip: a rounded body
+    // with the stop color swatch inside and a pointer nub stabbed down
+    // into the exact bar position. Triangles need canvas geometry; quads
+    // cannot do them.
+    let section = bar.bounds();
+    let pins: Vec<(Rectangle, Color, bool, bool)> = (0..2)
+        .filter_map(|i| {
+            let stop = color_picker.state.gradient.stops.get(i)?;
+            let handle = gradient_handle_rect(section, stop.offset);
+            if handle.width <= 0.0 || handle.height <= 0.0 {
+                return None;
+            }
+            Some((
+                handle,
+                stop.color,
+                color_picker.state.selected_stop == i,
+                cursor.is_over(handle)
+                    || cursor.is_over(gradient_pointer_rect(section, stop.offset)),
+            ))
+        })
+        .collect();
+    let section_origin = Vector::new(section.x, section.y);
+    let pin_geometry = color_picker.state.gradient_handles_cache.draw(
+        renderer,
+        section.size(),
+        |frame| {
+            for (handle, stop_color, selected, hovered) in &pins {
+                // Work in section-local coordinates.
+                let body = Rectangle {
+                    x: handle.x - section.x,
+                    y: handle.y - section.y,
+                    width: handle.width,
+                    height: handle.height,
+                };
+                let cx = body.center_x();
+                let border_color = if *selected {
+                    active_style.text_primary
+                } else {
+                    active_style.slider_handle_border_color
+                };
+                // Unselected pins are greyed out entirely (body + pointer),
+                // not just the pointer nub below the rectangle.
+                let background = if *selected {
+                    if *hovered {
+                        active_style.slider_handle_hover_background
+                    } else {
+                        active_style.slider_handle_background
+                    }
+                } else {
+                    active_style.slider_handle_border_color
+                };
+                // Pointer nub: base merged into the body bottom, apex
+                // stabbed into the bar at the stop's exact position.
+                let base_y = body.y + body.height - 2.0;
+                let apex = Point::new(
+                    cx,
+                    GRADIENT_PIN_ROW + GRADIENT_PIN_APEX_DEPTH,
+                );
+                let pointer = Path::new(|b| {
+                    b.move_to(Point::new(cx - GRADIENT_PIN_POINTER_HALF, base_y));
+                    b.line_to(Point::new(cx + GRADIENT_PIN_POINTER_HALF, base_y));
+                    b.line_to(apex);
+                    b.close();
+                });
+                frame.fill(&pointer, border_color);
+                // Pin body with the stop color swatch inside.
+                let body_path = Path::rounded_rectangle(
+                    body.position(),
+                    body.size(),
+                    5.0.into(),
+                );
+                frame.fill(&body_path, background);
+                frame.stroke(
+                    &body_path,
+                    Stroke {
+                        style: canvas::Style::Solid(border_color),
+                        width: if *selected { 2.0 } else { 1.0 },
+                        ..Stroke::default()
+                    },
+                );
+                frame.fill(
+                    &Path::rounded_rectangle(
+                        Point::new(body.x + 3.0, body.y + 3.0),
+                        Size::new((body.width - 6.0).max(1.0), (body.height - 6.0).max(1.0)),
+                        3.0.into(),
+                    ),
+                    *stop_color,
+                );
+            }
+        },
+    );
+    renderer.with_translation(section_origin, |renderer| {
+        renderer.draw_geometry(pin_geometry);
+    });
+    for (handle, _, selected, _) in &pins {
+        if color_picker.state.focus == Focus::GradientBar && *selected {
+            draw_focus_border(
+                renderer,
+                color_picker,
+                *handle,
+                Focus::GradientBar,
+                style_sheet,
+            );
+        }
+    }
+}
+
+/// Draws a placeholder for the HSV/RGB(A) tab bar (Color) or the
+/// Rect/HSV/RGBA tab bar (Gradient).
 fn tab_bar_placeholder<Message, Theme>(
     renderer: &mut Renderer,
     color_picker: &ColorPickerOverlay<'_, '_, Message, Theme>,
@@ -4678,6 +5603,54 @@ fn tab_bar_placeholder<Message, Theme>(
 {
     let active_style = style_sheet[&StyleState::Active];
     let bounds = layout.bounds();
+    if color_picker.state.picker_tab == PickerTab::Gradient {
+        let gap = 2.0;
+        let w = (bounds.width - 2.0 * gap) / 3.0;
+        let tabs = [
+            (
+                "Rect",
+                GradientEditorTab::Rect,
+                0.0,
+                color_picker.state.tab_rect_hovered,
+            ),
+            (
+                "HSV",
+                GradientEditorTab::Hsv,
+                w + gap,
+                color_picker.state.tab_hsv_hovered,
+            ),
+            (
+                "RGBA",
+                GradientEditorTab::Rgba,
+                2.0 * (w + gap),
+                color_picker.state.tab_rgb_hovered,
+            ),
+        ];
+        for (label, tab, x, hovered) in tabs {
+            let tab_bounds = Rectangle {
+                x: bounds.x + x,
+                y: bounds.y,
+                width: w,
+                height: bounds.height,
+            };
+            let selected = color_picker.state.gradient_editor == tab;
+            let background = if selected {
+                style_sheet[&StyleState::Selected].tab_selected_background
+            } else if cursor.is_over(tab_bounds) || hovered {
+                active_style.tab_hover_background
+            } else {
+                active_style.tab_background
+            };
+            let text_color = if selected {
+                active_style.text_primary
+            } else {
+                active_style.text_secondary
+            };
+            draw_editor_tab(renderer, tab_bounds, label, background, text_color, &active_style);
+        }
+        draw_gradient_editor_focus(renderer, color_picker, bounds, style_sheet);
+        return;
+    }
     let gap = 2.0;
     let half = (bounds.width - gap) / 2.0;
 
@@ -5120,7 +6093,7 @@ fn swatch_page<Message, Theme>(
     renderer.with_layer(viewport, |renderer| {
         for (i, cell_layout) in layout.children().enumerate() {
             let cell = cell_layout.bounds();
-            let Some(color) = set.colors.get(i) else {
+            let Some(picked) = set.colors.get(i) else {
                 draw_placeholder_well(
                     renderer,
                     cell,
@@ -5132,21 +6105,13 @@ fn swatch_page<Message, Theme>(
                 continue;
             };
 
-            // Checkerboard behind the color; tiles are drawn as solid quads so
-            // they stack below the color fill (the renderer batches quads and
+            // Checkerboard behind the fill; tiles are drawn as solid quads so
+            // they stack below the fill (the renderer batches quads and
             // meshes separately, and a mesh would always draw on top of a quad).
             draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
 
-            // Color fill on top (alpha-composited over the checkerboard).
-            if (cell.width > 0.) && (cell.height > 0.) {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: cell,
-                        ..renderer::Quad::default()
-                    },
-                    *color,
-                );
-            }
+            // Picked fill on top (alpha-composited over the checkerboard).
+            draw_picked_fill(renderer, cell, picked);
 
             // Border: hover / keyboard focus highlight.
             let focused = color_picker.state.focused_swatch
@@ -5339,7 +6304,7 @@ fn draw_recent_grid<Message, Theme>(
     renderer.with_layer(viewport, |renderer| {
         for (i, cell_layout) in layout.children().enumerate() {
             let cell = cell_layout.bounds();
-            let Some(color) = color_picker.state.recent_colors.get(i) else {
+            let Some(picked) = color_picker.state.recent_colors.get(i) else {
                 draw_placeholder_well(
                     renderer,
                     cell,
@@ -5353,15 +6318,7 @@ fn draw_recent_grid<Message, Theme>(
 
             draw_checkerboard(renderer, cell, tile, checker_1, checker_2);
 
-            if (cell.width > 0.) && (cell.height > 0.) {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: cell,
-                        ..renderer::Quad::default()
-                    },
-                    *color,
-                );
-            }
+            draw_picked_fill(renderer, cell, picked);
 
             renderer.fill_quad(
                 renderer::Quad {
@@ -5408,6 +6365,69 @@ fn draw_placeholder_well(
         },
         Color::TRANSPARENT,
     );
+}
+
+/// Fills `bounds` with a picked value: a single quad for solids, a sampled
+/// horizontal gradient strip for gradients (same technique as the gradient
+/// bar, so stop offsets are honored and alpha shows the checkerboard).
+fn draw_picked_fill(renderer: &mut Renderer, bounds: Rectangle, picked: &PickedValue) {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return;
+    }
+    match picked {
+        PickedValue::Solid(color) => {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds,
+                    ..renderer::Quad::default()
+                },
+                *color,
+            );
+        }
+        PickedValue::Gradient(gradient) => {
+            draw_gradient_fill(renderer, bounds, gradient);
+        }
+    }
+}
+
+/// Fills `bounds` with a horizontal sampled gradient.
+fn draw_gradient_fill(renderer: &mut Renderer, bounds: Rectangle, gradient: &Gradient) {
+    let steps = bounds.width.ceil() as i32;
+    if steps <= 0 {
+        return;
+    }
+    // Fast path for solid gradients (two identical stops): one quad.
+    if gradient.stops.len() == 2
+        && same_rgba(gradient.stops[0].color, gradient.stops[1].color)
+        && (gradient.stops[0].offset - 0.0).abs() < f32::EPSILON
+        && (gradient.stops[1].offset - 1.0).abs() < f32::EPSILON
+    {
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds,
+                ..renderer::Quad::default()
+            },
+            gradient.stops[0].color,
+        );
+        return;
+    }
+    for x in 0..steps {
+        let t = if bounds.width > 1.0 {
+            x as f32 / (bounds.width - 1.0)
+        } else {
+            0.0
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(
+                    Point::new(bounds.x + x as f32, bounds.y),
+                    Size::new(1.0, bounds.height),
+                ),
+                ..renderer::Quad::default()
+            },
+            gradient.sample(t),
+        );
+    }
 }
 
 /// Draws a checkerboard of solid quads behind a color, clamping the edge
@@ -5471,10 +6491,12 @@ fn preview_placeholder<Message, Theme>(
     let bounds = layout.bounds();
 
     let panel_width = (bounds.width - 5.0) / 2.0;
+    // Original = snapshot from before open (solid or gradient).
+    // New = live current value (solid or gradient).
     let panels = [
         (
             "Original",
-            color_picker.state.initial_color,
+            color_picker.state.initial_picked(),
             Rectangle {
                 x: bounds.x,
                 y: bounds.y,
@@ -5484,7 +6506,7 @@ fn preview_placeholder<Message, Theme>(
         ),
         (
             "New",
-            color_picker.state.color,
+            color_picker.state.current_picked(),
             Rectangle {
                 x: bounds.x + panel_width + 5.0,
                 y: bounds.y,
@@ -5498,22 +6520,14 @@ fn preview_placeholder<Message, Theme>(
     let checker_2 = active_style.checker_color_2;
     let tile = 10.0;
 
-    for (label, color, panel_bounds) in panels {
-        // Checkerboard behind the color; tiles are drawn as solid quads so
-        // they stack below the color fill (the renderer batches quads and
+    for (label, picked, panel_bounds) in panels {
+        // Checkerboard behind the fill; tiles are drawn as solid quads so
+        // they stack below the fill (the renderer batches quads and
         // meshes separately, and a mesh would always draw on top of a quad).
         draw_checkerboard(renderer, panel_bounds, tile, checker_1, checker_2);
 
-        // Color fill on top (alpha-composited over the checkerboard).
-        if (panel_bounds.width > 0.) && (panel_bounds.height > 0.) {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: panel_bounds,
-                    ..renderer::Quad::default()
-                },
-                color,
-            );
-        }
+        // Picked fill on top (alpha-composited over the checkerboard).
+        draw_picked_fill(renderer, panel_bounds, &picked);
 
         // Border.
         renderer.fill_quad(
@@ -6078,11 +7092,20 @@ where
     Theme: style::Catalog + iced::widget::button::Catalog + iced::widget::text::Catalog
         + iced::widget::text_input::Catalog,
 {
-    let row = match (color_picker.state.active_tab, channel) {
-        (ActiveTab::Rgb, 0..=3) => channel,
-        (ActiveTab::Hsv, 4..=6) => channel - 4,
-        (ActiveTab::Hsv, 3) => 3,
-        _ => return None,
+    let row = if color_picker.state.picker_tab == PickerTab::Gradient {
+        match (color_picker.state.gradient_editor, channel) {
+            (GradientEditorTab::Rgba, 0..=3) => channel,
+            (GradientEditorTab::Hsv, 4..=6) => channel - 4,
+            (GradientEditorTab::Hsv, 3) => 3,
+            _ => return None,
+        }
+    } else {
+        match (color_picker.state.active_tab, channel) {
+            (ActiveTab::Rgb, 0..=3) => channel,
+            (ActiveTab::Hsv, 4..=6) => channel - 4,
+            (ActiveTab::Hsv, 3) => 3,
+            _ => return None,
+        }
     };
     controls
         .children()
@@ -6123,9 +7146,17 @@ fn slider_rows<Message, Theme>(
     let hsv: Hsv = color_picker.state.hsv();
     let mut slider_children = layout.children();
 
-    let labels = match color_picker.state.active_tab {
-        ActiveTab::Rgb => ["R", "G", "B", "A"],
-        ActiveTab::Hsv => ["H", "S", "V", "A"],
+    let labels = if color_picker.state.picker_tab == PickerTab::Gradient {
+        match color_picker.state.gradient_editor {
+            GradientEditorTab::Rgba => ["R", "G", "B", "A"],
+            GradientEditorTab::Hsv => ["H", "S", "V", "A"],
+            GradientEditorTab::Rect => ["R", "G", "B", "A"],
+        }
+    } else {
+        match color_picker.state.active_tab {
+            ActiveTab::Rgb => ["R", "G", "B", "A"],
+            ActiveTab::Hsv => ["H", "S", "V", "A"],
+        }
     };
 
     for (row, label) in labels.iter().enumerate() {
@@ -6176,16 +7207,30 @@ fn slider_rows<Message, Theme>(
             .get(&bar_style_state)
             .expect("Style Sheet not found.");
 
-        let channel = match (color_picker.state.active_tab, row) {
-            (ActiveTab::Rgb, 0) => 0,
-            (ActiveTab::Rgb, 1) => 1,
-            (ActiveTab::Rgb, 2) => 2,
-            (ActiveTab::Rgb, 3) => 3,
-            (ActiveTab::Hsv, 0) => 4,
-            (ActiveTab::Hsv, 1) => 5,
-            (ActiveTab::Hsv, 2) => 6,
-            (ActiveTab::Hsv, 3) => 3,
-            _ => usize::MAX,
+        let channel = if color_picker.state.picker_tab == PickerTab::Gradient {
+            match (color_picker.state.gradient_editor, row) {
+                (GradientEditorTab::Rgba, 0) => 0,
+                (GradientEditorTab::Rgba, 1) => 1,
+                (GradientEditorTab::Rgba, 2) => 2,
+                (GradientEditorTab::Rgba, 3) => 3,
+                (GradientEditorTab::Hsv, 0) => 4,
+                (GradientEditorTab::Hsv, 1) => 5,
+                (GradientEditorTab::Hsv, 2) => 6,
+                (GradientEditorTab::Hsv, 3) => 3,
+                _ => usize::MAX,
+            }
+        } else {
+            match (color_picker.state.active_tab, row) {
+                (ActiveTab::Rgb, 0) => 0,
+                (ActiveTab::Rgb, 1) => 1,
+                (ActiveTab::Rgb, 2) => 2,
+                (ActiveTab::Rgb, 3) => 3,
+                (ActiveTab::Hsv, 0) => 4,
+                (ActiveTab::Hsv, 1) => 5,
+                (ActiveTab::Hsv, 2) => 6,
+                (ActiveTab::Hsv, 3) => 3,
+                _ => usize::MAX,
+            }
         };
 
         // Fraction of the channel value inside the groove.
@@ -6304,13 +7349,24 @@ fn slider_rows<Message, Theme>(
         }
 
         // Value field: channel TextInput of the active tab.
-        let value_input_index = match (color_picker.state.active_tab, row) {
-            (ActiveTab::Rgb, i) => i,
-            (ActiveTab::Hsv, 0) => 4,
-            (ActiveTab::Hsv, 1) => 5,
-            (ActiveTab::Hsv, 2) => 6,
-            (ActiveTab::Hsv, 3) => 3,
-            _ => usize::MAX,
+        let value_input_index = if color_picker.state.picker_tab == PickerTab::Gradient {
+            match (color_picker.state.gradient_editor, row) {
+                (GradientEditorTab::Rgba, i) => i,
+                (GradientEditorTab::Hsv, 0) => 4,
+                (GradientEditorTab::Hsv, 1) => 5,
+                (GradientEditorTab::Hsv, 2) => 6,
+                (GradientEditorTab::Hsv, 3) => 3,
+                _ => usize::MAX,
+            }
+        } else {
+            match (color_picker.state.active_tab, row) {
+                (ActiveTab::Rgb, i) => i,
+                (ActiveTab::Hsv, 0) => 4,
+                (ActiveTab::Hsv, 1) => 5,
+                (ActiveTab::Hsv, 2) => 6,
+                (ActiveTab::Hsv, 3) => 3,
+                _ => usize::MAX,
+            }
         };
         if value_input_index != usize::MAX {
             if let Some(tree_child) = color_picker
@@ -6473,6 +7529,8 @@ pub struct State {
     pub(crate) sat_value_canvas_cache: canvas::Cache,
     /// The cache of the hue ring canvas of the [`ColorPickerOverlay`].
     pub(crate) hue_canvas_cache: canvas::Cache,
+    /// The cache of the gradient stop pins of the [`ColorPickerOverlay`].
+    pub(crate) gradient_handles_cache: canvas::Cache,
     /// The dragged color bar of the [`ColorPickerOverlay`].
     pub(crate) color_bar_dragged: ColorBarDragged,
     /// the focus of the [`ColorPickerOverlay`].
@@ -6489,10 +7547,28 @@ pub struct State {
     pub(crate) active_tab: ActiveTab,
     /// The top-level tab: raw color picking or the swatch library.
     pub(crate) picker_tab: PickerTab,
+    /// The editor shown below the gradient stop bar.
+    pub(crate) gradient_editor: GradientEditorTab,
+    /// The two-stop gradient edited in the Gradient tab.
+    pub(crate) gradient: Gradient,
+    /// The gradient used to initialize the dialog.
+    pub(crate) initial_gradient: Gradient,
+    /// Whether the pre-open set value was a gradient (`true`) or a solid
+    /// (`false`). Fixed at construction / open-time synchronize; Original
+    /// always renders this snapshot and never follows tab switches.
+    pub(crate) initial_is_gradient: bool,
+    /// The selected gradient stop (`0` or `1`).
+    pub(crate) selected_stop: usize,
+    /// The dragged gradient stop, if any.
+    pub(crate) gradient_bar_dragged: Option<usize>,
     /// Whether the header/content "Color" top tab is hovered.
     pub(crate) top_color_hovered: bool,
+    /// Whether the header/content "Gradient" top tab is hovered.
+    pub(crate) top_gradient_hovered: bool,
     /// Whether the header/content "Library" top tab is hovered.
     pub(crate) top_library_hovered: bool,
+    /// Whether the "Rect" gradient editor tab is hovered.
+    pub(crate) tab_rect_hovered: bool,
     /// The text of the hex input field (e.g. `"#FF800080"`).
     pub(crate) hex_input: String,
     /// Whether the hex input field has the text cursor.
@@ -6509,8 +7585,8 @@ pub struct State {
     pub(crate) naming_new_set: bool,
     /// The name typed into the "new swatch set" prompt.
     pub(crate) pending_swatch_name: String,
-    /// The recently submitted colors.
-    pub(crate) recent_colors: Vec<Color>,
+    /// The recently submitted picked values (solids or gradients).
+    pub(crate) recent_colors: Vec<PickedValue>,
     /// The horizontal scroll offset of the recent colors strip.
     pub(crate) recent_scroll_x: f32,
     /// The horizontal scroll offset of the active swatch set's strip.
@@ -6551,14 +7627,29 @@ impl State {
     #[must_use]
     pub fn new(color: Color) -> Self {
         let hue = Hsv::from(color).hue;
+        let gradient = Gradient::two(color, color);
         Self {
             color,
             initial_color: color,
             hue,
+            gradient: gradient.clone(),
+            initial_gradient: gradient,
             hex_input: color_to_hex_argb(color),
             value_inputs: value_inputs_from_color(color),
             ..Self::default()
         }
+    }
+
+    /// Creates a new State with the given color and initial gradient.
+    /// The pre-open set value is the gradient.
+    #[must_use]
+    pub fn with_gradient(color: Color, gradient: Gradient) -> Self {
+        let mut state = Self::new(color);
+        state.gradient = gradient.clone();
+        state.initial_gradient = gradient;
+        state.initial_is_gradient = true;
+        state.selected_stop = 0;
+        state
     }
 
     /// Reset cached canvas when internal state is modified.
@@ -6568,12 +7659,58 @@ impl State {
     fn clear_cache(&self) {
         self.sat_value_canvas_cache.clear();
         self.hue_canvas_cache.clear();
+        self.gradient_handles_cache.clear();
     }
 
     /// Refresh the hex input and value field texts to match `self.color`.
     pub(crate) fn sync_display(&mut self) {
         self.hex_input = color_to_hex_argb(self.color);
         self.value_inputs = value_inputs_from_color(self.color);
+    }
+
+    /// Returns the current value as a unified picked value.
+    #[must_use]
+    pub(crate) fn current_picked(&self) -> PickedValue {
+        if self.picker_tab == PickerTab::Gradient {
+            PickedValue::Gradient(self.gradient.clone())
+        } else {
+            PickedValue::Solid(self.color)
+        }
+    }
+
+    /// Returns the pre-open set value: fixed at construction / open-time
+    /// synchronize, never follows later tab switches or live edits.
+    #[must_use]
+    pub(crate) fn initial_picked(&self) -> PickedValue {
+        if self.initial_is_gradient {
+            PickedValue::Gradient(self.initial_gradient.clone())
+        } else {
+            PickedValue::Solid(self.initial_color)
+        }
+    }
+
+    /// Applies a picked value: solids update the color (and keep the
+    /// gradient solid so Always-gradient previews stay in sync), gradients
+    /// load the stops and select the first stop.
+    pub(crate) fn apply_picked(&mut self, picked: PickedValue) {
+        match picked {
+            PickedValue::Solid(color) => {
+                self.apply_color(color);
+            }
+            PickedValue::Gradient(gradient) => {
+                self.gradient = gradient;
+                self.selected_stop = 0;
+                if let Some(stop) = self.gradient.stop(0) {
+                    let hsv: Hsv = stop.color.into();
+                    if hsv.saturation > 0.001 && hsv.value > 0.001 {
+                        self.hue = hsv.hue;
+                    }
+                    self.color = stop.color;
+                }
+                self.sync_display();
+                self.clear_cache();
+            }
+        }
     }
 
     /// Sets the current color, remembering its hue when it has one.
@@ -6587,6 +7724,52 @@ impl State {
             self.hue = hsv.hue;
         }
         self.color = color;
+        // Mirror every color edit into the selected gradient stop so the
+        // square, sliders, hex, keyboard, dropper and swatches all edit the
+        // stop while the Gradient tab is active.
+        if self.picker_tab == PickerTab::Gradient {
+            self.gradient.set_stop_color(self.selected_stop, color);
+        }
+    }
+
+    /// Selects a gradient stop and loads its color into the shared editor.
+    pub(crate) fn select_stop(&mut self, index: usize) {
+        let index = index.min(self.gradient.stops.len().saturating_sub(1));
+        self.selected_stop = index;
+        if let Some(stop) = self.gradient.stop(index) {
+            let hsv: Hsv = stop.color.into();
+            if hsv.saturation > 0.001 && hsv.value > 0.001 {
+                self.hue = hsv.hue;
+            }
+            self.color = stop.color;
+            self.sync_display();
+            self.clear_cache();
+        }
+    }
+
+    /// Resets the active tab's value to its initial value.
+    pub(crate) fn reset_to_initial(&mut self) {
+        if self.picker_tab == PickerTab::Gradient {
+            self.gradient = self.initial_gradient.clone();
+            self.selected_stop = 0;
+            if let Some(stop) = self.gradient.stop(0) {
+                self.color = stop.color;
+            }
+        } else {
+            self.color = self.initial_color;
+        }
+        self.sync_display();
+        self.clear_cache();
+    }
+
+    /// The channel indices edited in the Gradient tab for the current
+    /// editor: none for Rect (square), HSV or RGBA rows otherwise.
+    pub(crate) fn gradient_channels(&self) -> Vec<usize> {
+        match self.gradient_editor {
+            GradientEditorTab::Rect => Vec::new(),
+            GradientEditorTab::Hsv => vec![4, 5, 6, 3],
+            GradientEditorTab::Rgba => vec![0, 1, 2, 3],
+        }
     }
 
     /// The HSV of the current color for display purposes.
@@ -6608,7 +7791,26 @@ impl State {
     /// Synchronize the color with an externally provided value.
     pub(crate) fn force_synchronize(&mut self, color: Color) {
         self.initial_color = color;
-        self.apply_color(color);
+        self.initial_is_gradient = false;
+        self.color = color;
+        let hsv: Hsv = color.into();
+        if hsv.saturation > 0.001 && hsv.value > 0.001 {
+            self.hue = hsv.hue;
+        }
+        self.sync_display();
+        self.clear_cache();
+    }
+
+    /// Synchronize the gradient with an externally provided value.
+    /// The pre-open set value becomes the gradient.
+    pub(crate) fn force_synchronize_gradient(&mut self, gradient: Gradient) {
+        self.initial_gradient = gradient.clone();
+        self.initial_is_gradient = true;
+        self.gradient = gradient;
+        self.selected_stop = 0;
+        if let Some(stop) = self.gradient.stop(0) {
+            self.color = stop.color;
+        }
         self.sync_display();
         self.clear_cache();
     }
@@ -6617,12 +7819,14 @@ impl State {
 impl Default for State {
     fn default() -> Self {
         let default_color = Color::from_rgb(0.5, 0.25, 0.25);
+        let default_gradient = Gradient::two(default_color, default_color);
         Self {
             color: default_color,
             initial_color: default_color,
             hue: Hsv::from(default_color).hue,
             sat_value_canvas_cache: canvas::Cache::default(),
             hue_canvas_cache: canvas::Cache::default(),
+            gradient_handles_cache: canvas::Cache::default(),
             color_bar_dragged: ColorBarDragged::None,
             focus: Focus::default(),
             keyboard_modifiers: keyboard::Modifiers::default(),
@@ -6631,8 +7835,16 @@ impl Default for State {
             reset_pressed: false,
             active_tab: ActiveTab::Hsv,
             picker_tab: PickerTab::Color,
+            gradient_editor: GradientEditorTab::Rect,
+            gradient: default_gradient.clone(),
+            initial_gradient: default_gradient,
+            initial_is_gradient: false,
+            selected_stop: 0,
+            gradient_bar_dragged: None,
             top_color_hovered: false,
+            top_gradient_hovered: false,
             top_library_hovered: false,
+            tab_rect_hovered: false,
             hex_focused: false,
             value_focus: None,
             swatch_sets: vec![SwatchSet {
@@ -6817,8 +8029,14 @@ pub enum Focus {
     /// The top-level "Color" tab is in focus.
     TopColor,
 
+    /// The top-level "Gradient" tab is in focus.
+    TopGradient,
+
     /// The top-level "Library" tab is in focus.
     TopLibrary,
+
+    /// The gradient stop bar is in focus.
+    GradientBar,
 
     /// The hue slider below the square is in focus.
     Ring,
@@ -6856,6 +8074,9 @@ pub enum Focus {
     /// The HSV tab of the left pane is in focus.
     TabHsv,
 
+    /// The Rect tab of the gradient editor is in focus.
+    TabRect,
+
     /// The swatch section is in focus.
     Swatches,
 
@@ -6890,8 +8111,18 @@ fn channel_focus(channel: usize) -> Focus {
 /// tab are skipped, the swatch grid is only reachable in the Library tab,
 /// and the "new swatch set" input is only reachable while the naming prompt
 /// is active.
-fn focus_cycle(picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: bool) -> Vec<Focus> {
-    let mut cycle = vec![Focus::Overlay, Focus::TopColor, Focus::TopLibrary];
+fn focus_cycle(
+    picker_tab: PickerTab,
+    active_tab: ActiveTab,
+    gradient_editor: GradientEditorTab,
+    naming_new_set: bool,
+) -> Vec<Focus> {
+    let mut cycle = vec![
+        Focus::Overlay,
+        Focus::TopColor,
+        Focus::TopGradient,
+        Focus::TopLibrary,
+    ];
     match picker_tab {
         PickerTab::Color => {
             let (first, second, third) = match active_tab {
@@ -6910,6 +8141,21 @@ fn focus_cycle(picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: boo
                 Focus::TabRgb,
             ]);
         }
+        PickerTab::Gradient => {
+            cycle.push(Focus::GradientBar);
+            match gradient_editor {
+                GradientEditorTab::Rect => {
+                    cycle.extend([Focus::Square, Focus::Ring]);
+                }
+                GradientEditorTab::Hsv => {
+                    cycle.extend([Focus::HsvHue, Focus::HsvSat, Focus::HsvVal, Focus::Alpha]);
+                }
+                GradientEditorTab::Rgba => {
+                    cycle.extend([Focus::Red, Focus::Green, Focus::Blue, Focus::Alpha]);
+                }
+            }
+            cycle.extend([Focus::Hex, Focus::TabRect, Focus::TabHsv, Focus::TabRgb]);
+        }
         PickerTab::Library => {
             cycle.push(Focus::Swatches);
             if naming_new_set {
@@ -6923,8 +8169,14 @@ fn focus_cycle(picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: boo
 
 /// Gets the next focusable element.
 #[must_use]
-fn next_focus(focus: Focus, picker_tab: PickerTab, active_tab: ActiveTab, naming_new_set: bool) -> Focus {
-    let cycle = focus_cycle(picker_tab, active_tab, naming_new_set);
+fn next_focus(
+    focus: Focus,
+    picker_tab: PickerTab,
+    active_tab: ActiveTab,
+    gradient_editor: GradientEditorTab,
+    naming_new_set: bool,
+) -> Focus {
+    let cycle = focus_cycle(picker_tab, active_tab, gradient_editor, naming_new_set);
     let Some(position) = cycle.iter().position(|f| *f == focus) else {
         // Not part of the cycle (e.g. `None` or a channel focus of the
         // inactive tab): jump to the first element.
@@ -6939,9 +8191,10 @@ fn previous_focus(
     focus: Focus,
     picker_tab: PickerTab,
     active_tab: ActiveTab,
+    gradient_editor: GradientEditorTab,
     naming_new_set: bool,
 ) -> Focus {
-    let cycle = focus_cycle(picker_tab, active_tab, naming_new_set);
+    let cycle = focus_cycle(picker_tab, active_tab, gradient_editor, naming_new_set);
     let Some(position) = cycle.iter().position(|f| *f == focus) else {
         // Not part of the cycle: stay unfocused.
         return Focus::None;
@@ -6959,6 +8212,7 @@ mod tests {
         for expected in [
             Focus::Overlay,
             Focus::TopColor,
+            Focus::TopGradient,
             Focus::TopLibrary,
             Focus::Square,
             Focus::Ring,
@@ -6973,11 +8227,23 @@ mod tests {
             Focus::Dropper,
             Focus::Submit,
         ] {
-            focus = next_focus(focus, PickerTab::Color, ActiveTab::Rgb, false);
+            focus = next_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false,
+            );
             assert_eq!(focus, expected);
         }
         assert_eq!(
-            next_focus(focus, PickerTab::Color, ActiveTab::Rgb, false),
+            next_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
     }
@@ -6988,6 +8254,7 @@ mod tests {
         for expected in [
             Focus::Overlay,
             Focus::TopColor,
+            Focus::TopGradient,
             Focus::TopLibrary,
             Focus::Square,
             Focus::Ring,
@@ -7002,11 +8269,23 @@ mod tests {
             Focus::Dropper,
             Focus::Submit,
         ] {
-            focus = next_focus(focus, PickerTab::Color, ActiveTab::Hsv, false);
+            focus = next_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false,
+            );
             assert_eq!(focus, expected);
         }
         assert_eq!(
-            next_focus(focus, PickerTab::Color, ActiveTab::Hsv, false),
+            next_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
     }
@@ -7028,13 +8307,26 @@ mod tests {
             Focus::Ring,
             Focus::Square,
             Focus::TopLibrary,
+            Focus::TopGradient,
             Focus::TopColor,
         ] {
-            focus = previous_focus(focus, PickerTab::Color, ActiveTab::Rgb, false);
+            focus = previous_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false,
+            );
             assert_eq!(focus, expected);
         }
         assert_eq!(
-            previous_focus(focus, PickerTab::Color, ActiveTab::Rgb, false),
+            previous_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
     }
@@ -7056,15 +8348,58 @@ mod tests {
             Focus::Ring,
             Focus::Square,
             Focus::TopLibrary,
+            Focus::TopGradient,
             Focus::TopColor,
         ] {
-            focus = previous_focus(focus, PickerTab::Color, ActiveTab::Hsv, false);
+            focus = previous_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false,
+            );
             assert_eq!(focus, expected);
         }
         assert_eq!(
-            previous_focus(focus, PickerTab::Color, ActiveTab::Hsv, false),
+            previous_focus(
+                focus,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
+    }
+
+    #[test]
+    fn focus_cycle_gradient_rect() {
+        let mut focus = Focus::None;
+        for expected in [
+            Focus::Overlay,
+            Focus::TopColor,
+            Focus::TopGradient,
+            Focus::TopLibrary,
+            Focus::GradientBar,
+            Focus::Square,
+            Focus::Ring,
+            Focus::Hex,
+            Focus::TabRect,
+            Focus::TabHsv,
+            Focus::TabRgb,
+            Focus::Reset,
+            Focus::Dropper,
+            Focus::Submit,
+        ] {
+            focus = next_focus(
+                focus,
+                PickerTab::Gradient,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false,
+            );
+            assert_eq!(focus, expected);
+        }
     }
 
     #[test]
@@ -7073,21 +8408,40 @@ mod tests {
         for expected in [
             Focus::Overlay,
             Focus::TopColor,
+            Focus::TopGradient,
             Focus::TopLibrary,
             Focus::Swatches,
             Focus::Reset,
             Focus::Dropper,
             Focus::Submit,
         ] {
-            focus = next_focus(focus, PickerTab::Library, ActiveTab::Rgb, false);
+            focus = next_focus(
+                focus,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false,
+            );
             assert_eq!(focus, expected);
         }
         assert_eq!(
-            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, true),
+            next_focus(
+                Focus::Swatches,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                true
+            ),
             Focus::NewSetName
         );
         assert_eq!(
-            next_focus(Focus::NewSetName, PickerTab::Library, ActiveTab::Rgb, true),
+            next_focus(
+                Focus::NewSetName,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                true
+            ),
             Focus::Reset
         );
     }
@@ -7095,19 +8449,43 @@ mod tests {
     #[test]
     fn focus_cycle_naming_new_set() {
         assert_eq!(
-            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, true),
+            next_focus(
+                Focus::Swatches,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                true
+            ),
             Focus::NewSetName
         );
         assert_eq!(
-            next_focus(Focus::NewSetName, PickerTab::Library, ActiveTab::Rgb, true),
+            next_focus(
+                Focus::NewSetName,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                true
+            ),
             Focus::Reset
         );
         assert_eq!(
-            previous_focus(Focus::Reset, PickerTab::Library, ActiveTab::Rgb, true),
+            previous_focus(
+                Focus::Reset,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                true
+            ),
             Focus::NewSetName
         );
         assert_eq!(
-            next_focus(Focus::Swatches, PickerTab::Library, ActiveTab::Rgb, false),
+            next_focus(
+                Focus::Swatches,
+                PickerTab::Library,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Reset
         );
     }
@@ -7117,20 +8495,44 @@ mod tests {
         // A channel of the inactive tab is normalized: it is not part of
         // the cycle.
         assert_eq!(
-            next_focus(Focus::Red, PickerTab::Color, ActiveTab::Hsv, false),
+            next_focus(
+                Focus::Red,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
         assert_eq!(
-            previous_focus(Focus::Red, PickerTab::Color, ActiveTab::Hsv, false),
+            previous_focus(
+                Focus::Red,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::None
         );
         // Unfocused elements enter/leave the cycle at its start.
         assert_eq!(
-            next_focus(Focus::None, PickerTab::Color, ActiveTab::Hsv, false),
+            next_focus(
+                Focus::None,
+                PickerTab::Color,
+                ActiveTab::Hsv,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::Overlay
         );
         assert_eq!(
-            previous_focus(Focus::None, PickerTab::Color, ActiveTab::Rgb, false),
+            previous_focus(
+                Focus::None,
+                PickerTab::Color,
+                ActiveTab::Rgb,
+                GradientEditorTab::Rect,
+                false
+            ),
             Focus::None
         );
     }
@@ -7151,55 +8553,75 @@ mod tests {
 
     #[test]
     fn insert_swatch_dedupes_front_and_truncates() {
-        let red = Color::from_rgb8(255, 0, 0);
-        let green = Color::from_rgb8(0, 255, 0);
-        let blue = Color::from_rgb8(0, 0, 255);
+        let red = PickedValue::Solid(Color::from_rgb8(255, 0, 0));
+        let green = PickedValue::Solid(Color::from_rgb8(0, 255, 0));
+        let blue = PickedValue::Solid(Color::from_rgb8(0, 0, 255));
 
-        let mut colors = vec![red, green];
-        // Byte-exact duplicate is removed and the color moves to the front.
-        insert_swatch(&mut colors, red);
-        assert_eq!(colors, vec![red, green]);
-        // A color whose floats differ but whose RGBA bytes match is a duplicate:
-// the old color is removed and the new instance inserted at the front.
-        insert_swatch(&mut colors, Color { r: 0.001, ..green });
-        assert_eq!(colors, vec![Color { r: 0.001, ..green }, red]);
-        insert_swatch(&mut colors, blue);
-        assert_eq!(colors, vec![blue, Color { r: 0.001, ..green }, red]);
+        let mut colors = vec![red.clone(), green.clone()];
+        // Byte-exact duplicate is removed and the value moves to the front.
+        insert_swatch(&mut colors, red.clone());
+        assert_eq!(colors, vec![red.clone(), green.clone()]);
+        // A solid whose floats differ but whose RGBA bytes match is a duplicate:
+        // the old value is removed and the new instance inserted at the front.
+        let green_alias = PickedValue::Solid(Color {
+            r: 0.001,
+            ..Color::from_rgb8(0, 255, 0)
+        });
+        insert_swatch(&mut colors, green_alias.clone());
+        assert_eq!(colors, vec![green_alias.clone(), red.clone()]);
+        insert_swatch(&mut colors, blue.clone());
+        assert_eq!(colors, vec![blue.clone(), green_alias.clone(), red.clone()]);
+        // Gradients are a distinct picked type and do not dedupe solids.
+        let gradient = PickedValue::Gradient(Gradient::two(
+            Color::from_rgb8(255, 0, 0),
+            Color::from_rgb8(0, 0, 255),
+        ));
+        insert_swatch(&mut colors, gradient.clone());
+        assert_eq!(colors[0], gradient);
 
         // Truncation at MAX_SWATCHES_PER_SET: the oldest entries fall off the
         // end. The list was [0..=26] oldest-first; after inserting the new
-        // color at the front the tail [23..=26] is dropped.
+        // value at the front the tail [23..=26] is dropped.
         let mut many = (0..MAX_SWATCHES_PER_SET + 3)
-            .map(|i| Color::from_rgb8(i as u8, 0, 0))
+            .map(|i| PickedValue::Solid(Color::from_rgb8(i as u8, 0, 0)))
             .collect::<Vec<_>>();
-        let new_color = Color::from_rgb8(200, 200, 200);
-        insert_swatch(&mut many, new_color);
+        let new_color = PickedValue::Solid(Color::from_rgb8(200, 200, 200));
+        insert_swatch(&mut many, new_color.clone());
         assert_eq!(many.len(), MAX_SWATCHES_PER_SET);
         assert_eq!(many[0], new_color);
-        assert_eq!(many[1], Color::from_rgb8(0, 0, 0));
-        assert_eq!(many.last(), Some(&Color::from_rgb8(22, 0, 0)));
+        assert_eq!(many[1], PickedValue::Solid(Color::from_rgb8(0, 0, 0)));
+        assert_eq!(
+            many.last(),
+            Some(&PickedValue::Solid(Color::from_rgb8(22, 0, 0)))
+        );
     }
 
     #[test]
     fn push_recent_dedupes_front_and_truncates() {
-        let red = Color::from_rgb8(255, 0, 0);
-        let green = Color::from_rgb8(0, 255, 0);
+        let red = PickedValue::Solid(Color::from_rgb8(255, 0, 0));
+        let green = PickedValue::Solid(Color::from_rgb8(0, 255, 0));
 
         let mut recent = Vec::new();
-        push_recent(&mut recent, red);
-        push_recent(&mut recent, green);
-        assert_eq!(recent, vec![green, red]);
-        // Re-submitting the same color only moves it to the front.
-        push_recent(&mut recent, red);
-        assert_eq!(recent, vec![red, green]);
+        push_recent(&mut recent, red.clone());
+        push_recent(&mut recent, green.clone());
+        assert_eq!(recent, vec![green.clone(), red.clone()]);
+        // Re-submitting the same value only moves it to the front.
+        push_recent(&mut recent, red.clone());
+        assert_eq!(recent, vec![red.clone(), green.clone()]);
 
         // Truncation at MAX_RECENT.
         let mut many = (0..MAX_RECENT + 2)
-            .map(|i| Color::from_rgb8(i as u8, 0, 0))
+            .map(|i| PickedValue::Solid(Color::from_rgb8(i as u8, 0, 0)))
             .collect::<Vec<_>>();
-        push_recent(&mut many, Color::from_rgb8(9, 9, 9));
+        push_recent(
+            &mut many,
+            PickedValue::Solid(Color::from_rgb8(9, 9, 9)),
+        );
         assert_eq!(many.len(), MAX_RECENT);
-        assert_eq!(many[0], Color::from_rgb8(9, 9, 9));
+        assert_eq!(
+            many[0],
+            PickedValue::Solid(Color::from_rgb8(9, 9, 9))
+        );
     }
 
     #[test]
