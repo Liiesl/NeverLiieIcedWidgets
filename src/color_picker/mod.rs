@@ -78,7 +78,7 @@ pub mod style_state;
 
 pub use dropper::DropperBuffer;
 pub use gradient::{Gradient, GradientStop, PickedValue};
-pub use self::overlay::{SwatchSet, MAX_RECENT, MAX_SWATCHES_PER_SET};
+pub use self::overlay::{PickerTab, SwatchSet, MAX_RECENT, MAX_SWATCHES_PER_SET};
 
 use self::dropper::DropperMode;
 use self::overlay::{
@@ -164,6 +164,9 @@ where
     /// Optional unified submit callback with the picked value (solid color
     /// or gradient) for the active tab.
     on_pick_submit: Option<Box<dyn Fn(PickedValue) -> Message>>,
+    /// Optional function producing a message when the top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -232,6 +235,7 @@ where
             self.on_gradient_change.as_deref(),
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
+            self.on_tab_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -264,6 +268,7 @@ where
             on_gradient_change: None,
             on_pick: None,
             on_pick_submit: None,
+            on_tab_change: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             swatches: None,
@@ -332,6 +337,17 @@ where
         F: 'static + Fn(PickedValue) -> Message,
     {
         self.on_pick_submit = Some(Box::new(on_pick_submit));
+        self
+    }
+
+    /// Sets a callback producing a message when the top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    #[must_use]
+    pub fn on_tab_change<F>(mut self, on_tab_change: F) -> Self
+    where
+        F: 'static + Fn(PickerTab) -> Message,
+    {
+        self.on_tab_change = Some(Box::new(on_tab_change));
         self
     }
 
@@ -695,6 +711,7 @@ where
             self.on_gradient_change.as_deref(),
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
+            self.on_tab_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -731,6 +748,7 @@ where
             self.on_gradient_change.as_deref(),
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
+            self.on_tab_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -796,6 +814,7 @@ where
             self.on_gradient_change.as_deref(),
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
+            self.on_tab_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -961,6 +980,9 @@ where
     /// Optional unified submit callback with the picked value (solid color
     /// or gradient) for the active tab.
     on_pick_submit: Option<Box<dyn Fn(PickedValue) -> Message>>,
+    /// Optional function producing a message when the top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -1028,6 +1050,7 @@ where
             on_gradient_change: None,
             on_pick: None,
             on_pick_submit: None,
+            on_tab_change: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             swatches: None,
@@ -1097,6 +1120,17 @@ where
         F: 'static + Fn(PickedValue) -> Message,
     {
         self.on_pick_submit = Some(Box::new(on_pick_submit));
+        self
+    }
+
+    /// Sets a callback producing a message when the top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    #[must_use]
+    pub fn on_tab_change<F>(mut self, on_tab_change: F) -> Self
+    where
+        F: 'static + Fn(PickerTab) -> Message,
+    {
+        self.on_tab_change = Some(Box::new(on_tab_change));
         self
     }
 
@@ -1513,6 +1547,7 @@ where
                 self.on_gradient_change.as_deref(),
                 self.on_pick.as_deref(),
                 self.on_pick_submit.as_deref(),
+                self.on_tab_change.as_deref(),
                 self.dropper_buffer.as_ref(),
                 self.on_dropper_capture.as_deref(),
                 self.position,
