@@ -46,7 +46,7 @@ use iced::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::color_picker::{DropperBuffer, Gradient, PickedValue};
+use crate::color_picker::{DropperBuffer, Gradient, PickedValue, PickerTab, SwatchSet};
 use crate::color_picker::overlay as picker_overlay;
 use crate::color_picker::style as picker_style;
 use crate::overlay::Position;
@@ -305,6 +305,9 @@ struct HexState {
     old_show_picker: bool,
     last_cursor: Point,
     picker: picker_overlay::State,
+    old_swatches: Option<Vec<SwatchSet>>,
+    old_recents: Option<Vec<PickedValue>>,
+    old_active_tab: Option<usize>,
 }
 
 /// A compact hex color input with a floating picker.
@@ -322,6 +325,10 @@ where
     position: Option<Position>,
     dropper_buffer: Option<DropperBuffer>,
     on_dropper_capture: Option<Rc<dyn Fn() -> Message + 'a>>,
+    on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message + 'a>>,
+    swatches: Option<Vec<SwatchSet>>,
+    recent_colors: Option<Vec<PickedValue>>,
+    active_swatch_tab: Option<usize>,
     width: Length,
     text_size: Option<Pixels>,
     input_padding: Padding,
@@ -379,6 +386,10 @@ where
             position: None,
             dropper_buffer: None,
             on_dropper_capture: None,
+            on_tab_change: None,
+            swatches: None,
+            recent_colors: None,
+            active_swatch_tab: None,
             width: Length::Shrink,
             text_size: None,
             input_padding: Padding::new(4.0),
@@ -457,6 +468,41 @@ where
         on_capture: impl Fn() -> Message + 'a,
     ) -> Self {
         self.on_dropper_capture = Some(Rc::new(on_capture));
+        self
+    }
+
+    /// Sets a callback producing a message when the picker's top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    #[must_use]
+    pub fn on_tab_change(
+        mut self,
+        on_tab_change: impl Fn(PickerTab) -> Message + 'a,
+    ) -> Self {
+        self.on_tab_change = Some(Box::new(on_tab_change));
+        self
+    }
+
+    /// Seeds/restores the Library swatch sets (e.g. loaded from disk).
+    ///
+    /// Applied at state creation and on reopen; while open the widget owns
+    /// the sets internally (mirrors [`ColorPicker`](crate::color_picker)).
+    #[must_use]
+    pub fn swatches(mut self, swatches: Vec<SwatchSet>) -> Self {
+        self.swatches = Some(swatches);
+        self
+    }
+
+    /// Seeds/restores the Library recent colors (truncated to `MAX_RECENT`).
+    #[must_use]
+    pub fn recent_colors(mut self, recent_colors: Vec<PickedValue>) -> Self {
+        self.recent_colors = Some(recent_colors);
+        self
+    }
+
+    /// Restores the active swatch tab index (`None` = keep internal).
+    #[must_use]
+    pub fn active_swatch_tab(mut self, index: usize) -> Self {
+        self.active_swatch_tab = Some(index);
         self
     }
 
@@ -952,6 +998,16 @@ where
     }
 
     fn state(&self) -> widget::tree::State {
+        let mut picker = picker_overlay::State::new(Color::BLACK);
+        if let Some(swatches) = &self.swatches {
+            picker.set_swatches(swatches.clone());
+        }
+        if let Some(recents) = &self.recent_colors {
+            picker.set_recent_colors(recents.clone());
+        }
+        if let Some(index) = self.active_swatch_tab {
+            picker.set_active_swatch_tab(index);
+        }
         widget::tree::State::new(HexState {
             hex_buffer: None,
             alpha_buffer: None,
@@ -961,7 +1017,10 @@ where
             modifiers: iced::keyboard::Modifiers::default(),
             old_show_picker: false,
             last_cursor: Point::ORIGIN,
-            picker: picker_overlay::State::new(Color::BLACK),
+            picker,
+            old_swatches: self.swatches.clone(),
+            old_recents: self.recent_colors.clone(),
+            old_active_tab: self.active_swatch_tab,
         })
     }
 
@@ -977,6 +1036,58 @@ where
                 state
                     .picker
                     .force_synchronize_gradient(self.gradient_seed());
+                if let Some(swatches) = &self.swatches {
+                    state.picker.set_swatches(swatches.clone());
+                }
+                if let Some(recents) = &self.recent_colors {
+                    state.picker.set_recent_colors(recents.clone());
+                }
+                if let Some(index) = self.active_swatch_tab {
+                    state.picker.set_active_swatch_tab(index);
+                }
+                state.old_swatches = self.swatches.clone();
+                state.old_recents = self.recent_colors.clone();
+                state.old_active_tab = self.active_swatch_tab;
+            } else if self.show_picker {
+                match &self.swatches {
+                    Some(swatches) => {
+                        if state.old_swatches.as_ref() != Some(swatches)
+                            && state.picker.swatches() != swatches.as_slice()
+                        {
+                            state.picker.set_swatches(swatches.clone());
+                        }
+                        state.old_swatches = Some(swatches.clone());
+                    }
+                    None => {
+                        state.old_swatches = None;
+                    }
+                }
+                match &self.recent_colors {
+                    Some(recents) => {
+                        if state.old_recents.as_ref() != Some(recents)
+                            && state.picker.recent_colors() != recents.as_slice()
+                        {
+                            state.picker.set_recent_colors(recents.clone());
+                        }
+                        state.old_recents = Some(recents.clone());
+                    }
+                    None => {
+                        state.old_recents = None;
+                    }
+                }
+                match self.active_swatch_tab {
+                    Some(index) => {
+                        if state.old_active_tab != Some(index)
+                            && state.picker.active_swatch_tab() != index
+                        {
+                            state.picker.set_active_swatch_tab(index);
+                        }
+                        state.old_active_tab = Some(index);
+                    }
+                    None => {
+                        state.old_active_tab = None;
+                    }
+                }
             }
             state.old_show_picker = self.show_picker;
         }
@@ -1569,6 +1680,7 @@ where
         let button_tree = &mut tree.children[OVERLAY_BUTTONS];
         let dropper = self.dropper_buffer.as_ref();
         let capture = self.on_dropper_capture.as_deref();
+        let tab_change = self.on_tab_change.as_deref();
         Some(
             picker_overlay::ColorPickerWindow::new(
                 picker_state,
@@ -1579,7 +1691,7 @@ where
                 Some(&self.picker_gradient_change),
                 Some(&self.picker_pick),
                 Some(&self.picker_pick_submit),
-                None,
+                tab_change,
                 dropper,
                 capture,
                 self.position,
