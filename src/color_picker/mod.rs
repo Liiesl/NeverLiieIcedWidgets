@@ -167,6 +167,9 @@ where
     /// Optional function producing a message when the top-level tab
     /// (`Color | Gradient | Library`) changes.
     on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message>>,
+    /// Optional function producing a message when the Library mutates
+    /// (swatch sets, recents or active set). The app persists the payload.
+    on_library_change: Option<Box<dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -236,6 +239,7 @@ where
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
             self.on_tab_change.as_deref(),
+            self.on_library_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -269,6 +273,7 @@ where
             on_pick: None,
             on_pick_submit: None,
             on_tab_change: None,
+            on_library_change: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             swatches: None,
@@ -348,6 +353,18 @@ where
         F: 'static + Fn(PickerTab) -> Message,
     {
         self.on_tab_change = Some(Box::new(on_tab_change));
+        self
+    }
+
+    /// Sets a callback producing a message when the Library mutates
+    /// (swatch sets, recent colors or active set). The payload is the full
+    /// snapshot for app-level persistence.
+    #[must_use]
+    pub fn on_library_change<F>(mut self, on_library_change: F) -> Self
+    where
+        F: 'static + Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message,
+    {
+        self.on_library_change = Some(Box::new(on_library_change));
         self
     }
 
@@ -712,6 +729,7 @@ where
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
             self.on_tab_change.as_deref(),
+            self.on_library_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -749,6 +767,7 @@ where
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
             self.on_tab_change.as_deref(),
+            self.on_library_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -815,6 +834,7 @@ where
             self.on_pick.as_deref(),
             self.on_pick_submit.as_deref(),
             self.on_tab_change.as_deref(),
+            self.on_library_change.as_deref(),
             self.dropper_buffer.as_ref(),
             self.on_dropper_capture.as_deref(),
             false,
@@ -983,6 +1003,9 @@ where
     /// Optional function producing a message when the top-level tab
     /// (`Color | Gradient | Library`) changes.
     on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message>>,
+    /// Optional function producing a message when the Library mutates
+    /// (swatch sets, recents or active set). The app persists the payload.
+    on_library_change: Option<Box<dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message>>,
     /// Shared buffer receiving window screenshots for the eye dropper; the
     /// eyedropper button stays disabled while this is `None`.
     dropper_buffer: Option<DropperBuffer>,
@@ -1051,6 +1074,7 @@ where
             on_pick: None,
             on_pick_submit: None,
             on_tab_change: None,
+            on_library_change: None,
             dropper_buffer: None,
             on_dropper_capture: None,
             swatches: None,
@@ -1131,6 +1155,18 @@ where
         F: 'static + Fn(PickerTab) -> Message,
     {
         self.on_tab_change = Some(Box::new(on_tab_change));
+        self
+    }
+
+    /// Sets a callback producing a message when the Library mutates
+    /// (swatch sets, recent colors or active set). The payload is the full
+    /// snapshot for app-level persistence.
+    #[must_use]
+    pub fn on_library_change<F>(mut self, on_library_change: F) -> Self
+    where
+        F: 'static + Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message,
+    {
+        self.on_library_change = Some(Box::new(on_library_change));
         self
     }
 
@@ -1548,6 +1584,7 @@ where
                 self.on_pick.as_deref(),
                 self.on_pick_submit.as_deref(),
                 self.on_tab_change.as_deref(),
+                self.on_library_change.as_deref(),
                 self.dropper_buffer.as_ref(),
                 self.on_dropper_capture.as_deref(),
                 self.position,

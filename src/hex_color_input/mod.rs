@@ -326,6 +326,7 @@ where
     dropper_buffer: Option<DropperBuffer>,
     on_dropper_capture: Option<Rc<dyn Fn() -> Message + 'a>>,
     on_tab_change: Option<Box<dyn Fn(PickerTab) -> Message + 'a>>,
+    on_library_change: Option<Box<dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message + 'a>>,
     swatches: Option<Vec<SwatchSet>>,
     recent_colors: Option<Vec<PickedValue>>,
     active_swatch_tab: Option<usize>,
@@ -387,6 +388,7 @@ where
             dropper_buffer: None,
             on_dropper_capture: None,
             on_tab_change: None,
+            on_library_change: None,
             swatches: None,
             recent_colors: None,
             active_swatch_tab: None,
@@ -479,6 +481,18 @@ where
         on_tab_change: impl Fn(PickerTab) -> Message + 'a,
     ) -> Self {
         self.on_tab_change = Some(Box::new(on_tab_change));
+        self
+    }
+
+    /// Sets a callback producing a message when the Library mutates
+    /// (swatch sets, recent colors or active set). The payload is the full
+    /// snapshot for app-level persistence.
+    #[must_use]
+    pub fn on_library_change(
+        mut self,
+        on_library_change: impl Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message + 'a,
+    ) -> Self {
+        self.on_library_change = Some(Box::new(on_library_change));
         self
     }
 
@@ -1681,6 +1695,7 @@ where
         let dropper = self.dropper_buffer.as_ref();
         let capture = self.on_dropper_capture.as_deref();
         let tab_change = self.on_tab_change.as_deref();
+        let library_change = self.on_library_change.as_deref();
         Some(
             picker_overlay::ColorPickerWindow::new(
                 picker_state,
@@ -1692,6 +1707,7 @@ where
                 Some(&self.picker_pick),
                 Some(&self.picker_pick_submit),
                 tab_change,
+                library_change,
                 dropper,
                 capture,
                 self.position,
