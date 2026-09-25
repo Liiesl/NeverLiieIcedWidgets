@@ -1579,6 +1579,7 @@ where
                 Some(&self.picker_gradient_change),
                 Some(&self.picker_pick),
                 Some(&self.picker_pick_submit),
+                None,
                 dropper,
                 capture,
                 self.position,

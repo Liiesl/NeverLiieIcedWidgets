@@ -648,6 +648,9 @@ where
     /// Optional unified submit callback with the picked value (solid or
     /// gradient) for the active tab.
     on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
+    /// Optional function producing a message when the top-level tab
+    /// (`Color | Gradient | Library`) changes.
+    on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
     /// The shared buffer where the application deposits window screenshots
     /// for the eye dropper. The eyedropper button is disabled while this is
     /// `None`.
@@ -691,6 +694,7 @@ where
         on_gradient_change: Option<&'a dyn Fn(Gradient) -> Message>,
         on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
+        on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         lens_in_content_draw: bool,
@@ -789,6 +793,7 @@ where
             on_gradient_change,
             on_pick,
             on_pick_submit,
+            on_tab_change,
             dropper_buffer,
             on_dropper_capture,
             lens_in_content_draw,
@@ -2009,6 +2014,14 @@ where
             }
             self.state.clear_cache();
             shell.invalidate_layout();
+            self.notify_tab_changed(tab, shell);
+        }
+    }
+
+    /// Publishes the top-level tab change message, if subscribed.
+    fn notify_tab_changed(&self, tab: PickerTab, shell: &mut Shell<Message>) {
+        if let Some(on_tab_change) = self.on_tab_change {
+            shell.publish(on_tab_change(tab));
         }
     }
 
@@ -4240,6 +4253,7 @@ where
         on_gradient_change: Option<&'a dyn Fn(Gradient) -> Message>,
         on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
+        on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         position: Option<OverlayPosition>,
@@ -4264,6 +4278,7 @@ where
                 on_gradient_change,
                 on_pick,
                 on_pick_submit,
+                on_tab_change,
                 dropper_buffer,
                 on_dropper_capture,
                 true,
@@ -4434,6 +4449,7 @@ where
                         self.content.state.focus = Focus::TopColor;
                         shell.invalidate_layout();
                         shell.request_redraw();
+                        self.content.notify_tab_changed(PickerTab::Color, shell);
                     }
                     shell.capture_event();
                 } else if cursor.is_over(top_gradient_rect) {
@@ -4443,6 +4459,7 @@ where
                         self.content.state.select_stop(self.content.state.selected_stop);
                         shell.invalidate_layout();
                         shell.request_redraw();
+                        self.content.notify_tab_changed(PickerTab::Gradient, shell);
                     }
                     shell.capture_event();
                 } else if cursor.is_over(top_library_rect) {
@@ -4451,6 +4468,7 @@ where
                         self.content.state.focus = Focus::TopLibrary;
                         shell.invalidate_layout();
                         shell.request_redraw();
+                        self.content.notify_tab_changed(PickerTab::Library, shell);
                     }
                     shell.capture_event();
                 } else if cursor.is_over(header_rect)
