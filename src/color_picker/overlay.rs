@@ -651,6 +651,11 @@ where
     /// Optional function producing a message when the top-level tab
     /// (`Color | Gradient | Library`) changes.
     on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
+    /// Optional function producing a message when the Library mutates
+    /// (swatch sets, recent colors or active set). The app clones the
+    /// payload for disk persistence; `None` keeps the library in memory.
+    on_library_change:
+        Option<&'a dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message>,
     /// The shared buffer where the application deposits window screenshots
     /// for the eye dropper. The eyedropper button is disabled while this is
     /// `None`.
@@ -695,6 +700,9 @@ where
         on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
+        on_library_change: Option<
+            &'a dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message,
+        >,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         lens_in_content_draw: bool,
@@ -794,12 +802,24 @@ where
             on_pick,
             on_pick_submit,
             on_tab_change,
+            on_library_change,
             dropper_buffer,
             on_dropper_capture,
             lens_in_content_draw,
             class,
             tree,
             viewport,
+        }
+    }
+
+    /// Publishes the library snapshot for app-level persistence.
+    fn notify_library_changed(&self, shell: &mut Shell<Message>) {
+        if let Some(on_library_change) = self.on_library_change {
+            shell.publish(on_library_change(
+                self.state.swatch_sets.clone(),
+                self.state.recent_colors.clone(),
+                self.state.active_swatch_tab,
+            ));
         }
     }
 
@@ -2049,6 +2069,7 @@ where
         self.state.naming_new_set = false;
         self.state.pending_swatch_name.clear();
         self.state.clear_cache();
+        self.notify_library_changed(shell);
         shell.invalidate_layout();
     }
 
@@ -2152,6 +2173,7 @@ where
                 self.state.swatch_sets.remove(i);
                 self.state.active_swatch_tab = new_active;
                 self.state.clear_cache();
+                self.notify_library_changed(shell);
                 shell.invalidate_layout();
                 return true;
             }
@@ -2161,6 +2183,7 @@ where
             if hovered_tab < tabs.len() && self.state.active_swatch_tab != hovered_tab {
                 self.state.active_swatch_tab = hovered_tab;
                 self.state.clear_cache();
+                self.notify_library_changed(shell);
                 shell.invalidate_layout();
                 return true;
             }
@@ -2201,6 +2224,7 @@ where
                 if let Some(set) = self.state.swatch_sets.get_mut(set_idx) {
                     insert_swatch(&mut set.colors, picked);
                     self.state.clear_cache();
+                    self.notify_library_changed(shell);
                     shell.invalidate_layout();
                 }
                 return true;
@@ -3438,6 +3462,7 @@ where
                 insert_swatch(&mut set.colors, picked);
             }
             self.state.clear_cache();
+            self.notify_library_changed(shell);
             if let Some(on_pick_submit) = self.on_pick_submit {
                 shell.publish(on_pick_submit(self.state.current_picked()));
             }
@@ -4254,6 +4279,9 @@ where
         on_pick: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_pick_submit: Option<&'a dyn Fn(PickedValue) -> Message>,
         on_tab_change: Option<&'a dyn Fn(PickerTab) -> Message>,
+        on_library_change: Option<
+            &'a dyn Fn(Vec<SwatchSet>, Vec<PickedValue>, usize) -> Message,
+        >,
         dropper_buffer: Option<&'a DropperBuffer>,
         on_dropper_capture: Option<&'a dyn Fn() -> Message>,
         position: Option<OverlayPosition>,
@@ -4279,6 +4307,7 @@ where
                 on_pick,
                 on_pick_submit,
                 on_tab_change,
+                on_library_change,
                 dropper_buffer,
                 on_dropper_capture,
                 true,
